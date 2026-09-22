@@ -38,9 +38,11 @@ const elements = {
   overlay: document.querySelector("#crop-overlay"),
   resultEmpty: document.querySelector("#result-empty"),
   resultPage: document.querySelector("#result-page"),
-  resultCanvas: document.querySelector("#result-canvas"),
+  resultImage: document.querySelector("#result-image"),
   resultNote: document.querySelector("#result-note"),
   queue: document.querySelector("#queue"),
+  brightness: document.querySelector("#brightness"),
+  openTab: document.querySelector("#open-tab"),
   download: document.querySelector("#download"),
   downloadAll: document.querySelector("#download-all"),
   algorithm: document.querySelector("#algorithm"),
@@ -168,6 +170,7 @@ function readSettings() {
     algorithm: elements.algorithm.value,
     param: param === "" ? null : Number(param),
     desat: Number(elements.desat.value),
+    brightness: elements.brightness.value,
     peakMode: elements.peakMode.value,
     peakNits: Number(elements.peakNits.value) || DEFAULT_SETTINGS.peakNits,
     exposure: Number(elements.exposure.value),
@@ -182,6 +185,7 @@ function writeSettings(settings) {
   elements.algorithm.value = settings.algorithm;
   elements.param.value = settings.param === null || settings.param === undefined ? "" : settings.param;
   elements.desat.value = settings.desat;
+  elements.brightness.value = settings.brightness;
   elements.peakMode.value = settings.peakMode;
   elements.peakNits.value = settings.peakNits;
   elements.exposure.value = settings.exposure;
@@ -349,15 +353,18 @@ function renderResult() {
   elements.resultEmpty.hidden = Boolean(result);
   elements.resultPage.hidden = !result;
   elements.download.disabled = !result || state.processing;
+  elements.openTab.disabled = !result || state.processing;
 
   if (!result) {
     elements.resultNote.textContent = "";
+    elements.resultImage.removeAttribute("src");
     return;
   }
 
-  elements.resultCanvas.width = result.canvas.width;
-  elements.resultCanvas.height = result.canvas.height;
-  elements.resultCanvas.getContext("2d").drawImage(result.canvas, 0, 0);
+  // Show the encoded file itself, so "Save image as" and the Download button
+  // hand over exactly the same bytes, format and dimensions.
+  elements.resultImage.src = item.resultUrl;
+  elements.resultImage.alt = outputName(item);
   elements.resultNote.textContent = `${result.canvas.width}×${result.canvas.height} · ${Math.round(
     result.blob.size / 1024
   )} kB`;
@@ -421,6 +428,7 @@ function updateControls() {
   elements.file.disabled = busy;
   elements.addFiles.disabled = busy;
   elements.download.disabled = !item?.result || busy;
+  elements.openTab.disabled = !item?.result || busy;
   elements.downloadAll.hidden = converted.length < 2;
   elements.downloadAll.disabled = converted.length < 2 || busy;
 
@@ -544,14 +552,23 @@ async function convertAllItems() {
   }
 }
 
-function downloadItem(item) {
-  if (!item?.resultUrl) return;
+function outputName(item) {
   const extension = EXTENSIONS[item.result.blob.type] || "jpg";
   const baseName = item.file.name.replace(/\.[^.]+$/, "");
+  return `${baseName}-sdr.${extension}`;
+}
+
+function downloadItem(item) {
+  if (!item?.resultUrl) return;
   const link = document.createElement("a");
   link.href = item.resultUrl;
-  link.download = `${baseName}-sdr.${extension}`;
+  link.download = outputName(item);
   link.click();
+}
+
+function openItemInTab(item) {
+  if (!item?.resultUrl) return;
+  window.open(item.resultUrl, "_blank", "noopener");
 }
 
 /* --------------------------------------------------------------------- crop */
@@ -703,6 +720,7 @@ elements.crop.addEventListener("click", toggleCropMode);
 elements.cropReset.addEventListener("click", resetCrop);
 elements.clear.addEventListener("click", clearItems);
 elements.download.addEventListener("click", () => downloadItem(activeItem()));
+elements.openTab.addEventListener("click", () => openItemInTab(activeItem()));
 elements.downloadAll.addEventListener("click", () => {
   state.items.filter((item) => item.result).forEach((item, index) => {
     setTimeout(() => downloadItem(item), index * 250);
@@ -715,6 +733,7 @@ window.addEventListener("resize", renderSelection);
 
 [
   elements.algorithm,
+  elements.brightness,
   elements.peakMode,
   elements.peakNits,
   elements.desat,
