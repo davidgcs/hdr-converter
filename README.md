@@ -30,6 +30,11 @@ zscale=p=bt709,tonemap=tonemap=mobius:desat=2,zscale=t=bt709:m=bt709:r=tv" outpu
 1. **Decode.** WebCodecs `ImageDecoder` hands back the raw planar samples
    (for example 10-bit `I420P10`), so the real HDR data is used. Drawing an HDR
    image on a canvas would let the browser clip it to SDR first.
+   The colour tags come from the file's own `colr`/`nclx` box rather than from
+   `VideoFrame.colorSpace`, which cannot express every CICP value: an AVIF coded
+   with `matrix_coefficients = 0` (identity, so the planes carry G, B and R
+   instead of Y, Cb and Cr — common in HDR game screenshots) is reported as
+   `matrix: null`, and assuming a YUV matrix for it turns the picture green.
 2. **Linearise.** The source transfer function (PQ / HLG / sRGB / BT.709) is
    inverted, with HLG also getting its OOTF. `1.0` means 100 nits, the same
    reference white FFmpeg uses.
