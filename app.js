@@ -5,6 +5,8 @@ import {
   canvasToBlob,
   convert,
   normalizeCrop,
+  prepareScene,
+  renderPreview,
   toCanvas
 } from "./src/pipeline.js";
 import { REFERENCE_WHITE } from "./src/colorspace.js";
@@ -39,7 +41,19 @@ const elements = {
   resultEmpty: document.querySelector("#result-empty"),
   resultPage: document.querySelector("#result-page"),
   resultImage: document.querySelector("#result-image"),
+  resultPreview: document.querySelector("#result-preview"),
   resultNote: document.querySelector("#result-note"),
+  liveExposure: document.querySelector("#live-exposure"),
+  liveExposureRange: document.querySelector("#live-exposure-range"),
+  liveExposureValue: document.querySelector("#live-exposure-value"),
+  liveExposureReset: document.querySelector("#live-exposure-reset"),
+  compare: document.querySelector("#compare"),
+  compareDialog: document.querySelector("#compare-dialog"),
+  compareClose: document.querySelector("#compare-close"),
+  compareViewport: document.querySelector("#compare-viewport"),
+  compareBefore: document.querySelector("#compare-before"),
+  compareAfter: document.querySelector("#compare-after"),
+  compareDivider: document.querySelector("#compare-divider"),
   queue: document.querySelector("#queue"),
   brightness: document.querySelector("#brightness"),
   openTab: document.querySelector("#open-tab"),
@@ -78,6 +92,106 @@ const state = {
 const translate = createTranslator(() => state.language);
 let selection = null;
 let nextId = 1;
+
+/* ---------------------------------------------------------------- tooltips */
+
+/** Which explanation belongs to which control. */
+const TIPS = {
+  algorithm: "TIP_TONEMAP",
+  brightness: "TIP_BRIGHTNESS",
+  "peak-mode": "TIP_PEAK",
+  "peak-nits": "TIP_PEAK_NITS",
+  desat: "TIP_DESAT",
+  format: "TIP_FORMAT",
+  quality: "TIP_QUALITY",
+  aspect: "TIP_ASPECT",
+  "input-override": "TIP_INPUT",
+  param: "TIP_PARAM",
+  exposure: "TIP_EXPOSURE",
+  "max-dimension": "TIP_MAXDIM"
+};
+
+const tip = document.createElement("div");
+tip.className = "tip";
+tip.setAttribute("role", "tooltip");
+tip.hidden = true;
+document.body.append(tip);
+
+let tipAnchor = null;
+
+function showTip(button) {
+  tipAnchor = button;
+  tip.textContent = translate(button.dataset.tip);
+  tip.hidden = false;
+
+  const anchor = button.getBoundingClientRect();
+  const box = tip.getBoundingClientRect();
+  const margin = 8;
+  // Keep the bubble on screen: prefer above the icon, flip below when there is
+  // no room, and never let it run off either edge.
+  const left = Math.min(
+    Math.max(margin, anchor.left + anchor.width / 2 - box.width / 2),
+    window.innerWidth - box.width - margin
+  );
+  const above = anchor.top - box.height - margin;
+  tip.style.left = `${left}px`;
+  tip.style.top = `${above < margin ? anchor.bottom + margin : above}px`;
+}
+
+function hideTip() {
+  tip.hidden = true;
+  if (tipAnchor) tipAnchor.setAttribute("aria-expanded", "false");
+  tipAnchor = null;
+}
+
+/**
+ * Adds an "i" button to every labelled control listed in TIPS.
+ *
+ * Generated rather than written into the markup so a control and its
+ * explanation cannot drift apart, and so adding a setting only means adding
+ * one entry above plus one translation.
+ */
+function decorateSettings() {
+  for (const [id, key] of Object.entries(TIPS)) {
+    const label = document.querySelector(`#${id}`)?.closest(".setting")?.querySelector(".field-label");
+    if (!label) continue;
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "info";
+    button.dataset.tip = key;
+    button.setAttribute("aria-expanded", "false");
+    button.textContent = "i";
+    button.addEventListener("pointerenter", () => showTip(button));
+    button.addEventListener("pointerleave", hideTip);
+    button.addEventListener("focus", () => showTip(button));
+    button.addEventListener("blur", hideTip);
+    button.addEventListener("click", (event) => {
+      // The button lives inside a <label>, so a bare click would focus the
+      // control instead of toggling the explanation.
+      event.preventDefault();
+      const open = button.getAttribute("aria-expanded") === "true";
+      hideTip();
+      if (!open) {
+        button.setAttribute("aria-expanded", "true");
+        showTip(button);
+      }
+    });
+
+    // The label itself carries the translation key, and translating sets
+    // textContent — which would wipe the button straight back out. Move the
+    // key onto an inner span so label text and icon can coexist.
+    const text = document.createElement("span");
+    text.dataset.i18n = label.dataset.i18n;
+    text.textContent = label.textContent;
+    delete label.dataset.i18n;
+    label.replaceChildren(text, button);
+  }
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") hideTip();
+  });
+  window.addEventListener("scroll", hideTip, true);
+}
 
 /* ---------------------------------------------------------------- language */
 
@@ -131,6 +245,10 @@ function applyLanguage(language) {
   document.querySelectorAll("[data-i18n-aria-label]").forEach((element) => {
     element.setAttribute("aria-label", translate(element.dataset.i18nAriaLabel));
   });
+  document.querySelectorAll("[data-i18n-title]").forEach((element) => {
+    element.title = translate(element.dataset.i18nTitle);
+  });
+  if (tipAnchor) showTip(tipAnchor);
 
   updateThemeControl();
   updateControls();
@@ -223,6 +341,10 @@ function updateSettingVisibility() {
   elements.desatValue.textContent = elements.desat.value;
   elements.qualityValue.textContent = elements.quality.value;
   elements.exposureValue.textContent = elements.exposure.value;
+  // The slider under the result and the advanced setting are the same control.
+  const stops = Number(elements.exposure.value);
+  elements.liveExposureRange.value = String(stops);
+  elements.liveExposureValue.textContent = stops.toFixed(2);
 }
 
 /* ------------------------------------------------------------------- items */
@@ -350,10 +472,15 @@ function renderSource() {
 function renderResult() {
   const item = activeItem();
   const result = item?.result || null;
+  const ready = Boolean(result) && !state.processing;
   elements.resultEmpty.hidden = Boolean(result);
   elements.resultPage.hidden = !result;
-  elements.download.disabled = !result || state.processing;
-  elements.openTab.disabled = !result || state.processing;
+  elements.download.disabled = !ready;
+  elements.openTab.disabled = !ready;
+  elements.compare.disabled = !ready;
+  elements.liveExposure.hidden = !result;
+  elements.liveExposureRange.disabled = !ready;
+  elements.liveExposureReset.disabled = !ready || Number(elements.liveExposureRange.value) === 0;
 
   if (!result) {
     elements.resultNote.textContent = "";
@@ -363,6 +490,8 @@ function renderResult() {
 
   // Show the encoded file itself, so "Save image as" and the Download button
   // hand over exactly the same bytes, format and dimensions.
+  elements.resultImage.hidden = false;
+  elements.resultPreview.hidden = true;
   elements.resultImage.src = item.resultUrl;
   elements.resultImage.alt = outputName(item);
   elements.resultNote.textContent = `${result.canvas.width}×${result.canvas.height} · ${Math.round(
@@ -429,6 +558,10 @@ function updateControls() {
   elements.addFiles.disabled = busy;
   elements.download.disabled = !item?.result || busy;
   elements.openTab.disabled = !item?.result || busy;
+  elements.compare.disabled = !item?.result || busy;
+  elements.liveExposureRange.disabled = !item?.result || busy;
+  elements.liveExposureReset.disabled =
+    !item?.result || busy || Number(elements.liveExposureRange.value) === 0;
   elements.downloadAll.hidden = converted.length < 2;
   elements.downloadAll.disabled = converted.length < 2 || busy;
 
@@ -510,6 +643,39 @@ function clearItems() {
 
 /* --------------------------------------------------------------- conversion */
 
+/**
+ * Caches the linearised scene an item was last previewed from.
+ *
+ * Only the crop and the input interpretation change what `prepareScene`
+ * produces, so the buffer survives every other settings change — which is
+ * what makes the exposure slider live.
+ */
+function ensurePrepared(item, settings) {
+  const key = `${JSON.stringify(item.crop)}|${settings.inputOverride}`;
+  if (item.prepared?.key !== key) {
+    item.prepared = { key, data: prepareScene(item.source, settings, item.crop) };
+  }
+  return item.prepared.data;
+}
+
+async function convertItem(item, settings, onProgress) {
+  const { imageData, peak } = await convert(item.source, settings, item.crop, {
+    onProgress,
+    // Reuse the measurement the preview exposed from, so releasing the slider
+    // can never shift the brightness the user just dialled in.
+    scene: item.prepared?.key === `${JSON.stringify(item.crop)}|${settings.inputOverride}`
+      ? item.prepared.data.scene
+      : undefined
+  });
+
+  const canvas = toCanvas(imageData, settings.maxDimension);
+  const blob = await canvasToBlob(canvas, settings.outputFormat, settings.quality);
+  if (item.resultUrl) URL.revokeObjectURL(item.resultUrl);
+
+  item.result = { canvas, blob, peak };
+  item.resultUrl = URL.createObjectURL(blob);
+}
+
 async function convertAllItems() {
   if (!state.items.length) return;
   const settings = readSettings();
@@ -522,17 +688,9 @@ async function convertAllItems() {
   try {
     for (let index = 0; index < state.items.length; index++) {
       const item = state.items[index];
-      const { imageData, peak } = await convert(item.source, settings, item.crop, {
-        onProgress: (ratio) => setProgress((index + ratio) / state.items.length)
-      });
-
-      const canvas = toCanvas(imageData, settings.maxDimension);
-      const blob = await canvasToBlob(canvas, settings.outputFormat, settings.quality);
-      if (item.resultUrl) URL.revokeObjectURL(item.resultUrl);
-
-      item.result = { canvas, blob, peak };
-      item.resultUrl = URL.createObjectURL(blob);
-
+      await convertItem(item, settings, (ratio) =>
+        setProgress((index + ratio) / state.items.length)
+      );
       if (item.id === state.activeId) renderResult();
     }
 
@@ -549,7 +707,147 @@ async function convertAllItems() {
     renderResult();
     renderQueue();
     setProgress(0);
+    // Warm the live-exposure buffer now rather than on the first drag, so
+    // scrubbing starts smoothly.
+    const ready = activeItem();
+    if (ready?.result) setTimeout(() => ensurePrepared(ready, settings), 0);
   }
+}
+
+/* ----------------------------------------------------------- live exposure */
+
+let scrubFrame = 0;
+
+/** Redraws the preview from the cached scene, without re-encoding a file. */
+function scrubExposure() {
+  const item = activeItem();
+  if (!item?.result || state.processing) return;
+
+  const stops = Number(elements.liveExposureRange.value);
+  elements.liveExposureValue.textContent = stops.toFixed(2);
+  elements.exposure.value = String(stops);
+  elements.exposureValue.textContent = String(stops);
+  elements.liveExposureReset.disabled = stops === 0;
+
+  cancelAnimationFrame(scrubFrame);
+  scrubFrame = requestAnimationFrame(() => {
+    const settings = { ...readSettings(), exposure: stops };
+    const imageData = renderPreview(ensurePrepared(item, settings), settings);
+    const canvas = elements.resultPreview;
+    canvas.width = imageData.width;
+    canvas.height = imageData.height;
+    canvas.getContext("2d").putImageData(imageData, 0, 0);
+    // Swap the encoded file out for the live canvas only while scrubbing.
+    canvas.hidden = false;
+    elements.resultImage.hidden = true;
+  });
+}
+
+/** Re-encodes the active item so the preview is a real file again. */
+async function commitExposure() {
+  const item = activeItem();
+  if (!item?.result || state.processing) return;
+
+  const settings = readSettings();
+  persistSettings();
+  setBusy(true);
+  setStatus("CONVERTING");
+  try {
+    await convertItem(item, settings, setProgress);
+  } catch (error) {
+    setStatus("CONVERT_ERROR", { message: error?.message || String(error) });
+  } finally {
+    setBusy(false);
+    setProgress(0);
+    renderResult();
+    renderQueue();
+    const result = item.result;
+    if (result) {
+      setStatus("CONVERTED", {
+        width: result.canvas.width,
+        height: result.canvas.height,
+        nits: Math.round(result.peak * REFERENCE_WHITE)
+      });
+    }
+  }
+}
+
+/* --------------------------------------------------------------- comparison */
+
+/**
+ * Renders the same framing the result uses from the browser's own rendering of
+ * the source file, so the two halves of the comparison line up.
+ *
+ * That rendering is exactly what the user already sees everywhere else: the
+ * HDR file squashed into SDR by the display pipeline, which is the thing the
+ * conversion is meant to improve on.
+ */
+function buildBeforeImage(item) {
+  const crop = normalizeCrop(item.source, item.crop);
+  const target = item.result.canvas;
+  const canvas = document.createElement("canvas");
+  canvas.width = target.width;
+  canvas.height = target.height;
+  const context = canvas.getContext("2d");
+  context.drawImage(
+    elements.sourceImage,
+    crop.x,
+    crop.y,
+    crop.width,
+    crop.height,
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+  return canvas.toDataURL("image/png");
+}
+
+function setWipe(percent) {
+  const clamped = Math.min(100, Math.max(0, percent));
+  elements.compareViewport.style.setProperty("--wipe", `${clamped}%`);
+  elements.compareDivider.setAttribute("aria-valuenow", String(Math.round(clamped)));
+}
+
+function openCompare() {
+  const item = activeItem();
+  if (!item?.result) return;
+  elements.compareAfter.src = item.resultUrl;
+  elements.compareAfter.alt = translate("COMPARE_AFTER");
+  elements.compareBefore.src = buildBeforeImage(item);
+  elements.compareBefore.alt = translate("COMPARE_BEFORE");
+  setWipe(50);
+  elements.compareDialog.showModal();
+}
+
+function wipeFromPointer(event) {
+  const rect = elements.compareViewport.getBoundingClientRect();
+  setWipe(((event.clientX - rect.left) / rect.width) * 100);
+}
+
+function beginWipe(event) {
+  if (event.button !== undefined && event.button !== 0) return;
+  event.preventDefault();
+  elements.compareDivider.focus();
+  wipeFromPointer(event);
+  const move = (moveEvent) => wipeFromPointer(moveEvent);
+  const stop = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", stop);
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", stop);
+}
+
+function nudgeWipe(event) {
+  const step = event.shiftKey ? 10 : 2;
+  const current = Number(elements.compareDivider.getAttribute("aria-valuenow"));
+  if (event.key === "ArrowLeft") setWipe(current - step);
+  else if (event.key === "ArrowRight") setWipe(current + step);
+  else if (event.key === "Home") setWipe(0);
+  else if (event.key === "End") setWipe(100);
+  else return;
+  event.preventDefault();
 }
 
 function outputName(item) {
@@ -731,6 +1029,19 @@ elements.overlay.addEventListener("pointerdown", beginDrag);
 elements.sourceImage.addEventListener("load", renderSelection);
 window.addEventListener("resize", renderSelection);
 
+elements.liveExposureRange.addEventListener("input", scrubExposure);
+elements.liveExposureRange.addEventListener("change", commitExposure);
+elements.liveExposureReset.addEventListener("click", () => {
+  elements.liveExposureRange.value = "0";
+  scrubExposure();
+  commitExposure();
+});
+
+elements.compare.addEventListener("click", openCompare);
+elements.compareClose.addEventListener("click", () => elements.compareDialog.close());
+elements.compareViewport.addEventListener("pointerdown", beginWipe);
+elements.compareDivider.addEventListener("keydown", nudgeWipe);
+
 [
   elements.algorithm,
   elements.brightness,
@@ -767,8 +1078,10 @@ elements.resetSettings.addEventListener("click", () => {
 
 /* --------------------------------------------------------------------- boot */
 
+decorateSettings();
 applyTheme(getInitialTheme());
 restoreSettings();
+updateSettingVisibility();
 applyLanguage(getInitialLanguage());
 setStatus("INITIAL_STATUS");
 

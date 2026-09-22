@@ -14,6 +14,12 @@ runs locally in the browser — no upload, no server.
 - Tone mapping curves ported from FFmpeg's `tonemap` filter.
 - Automatic exposure so HDR photos look right on ordinary screens and in
   messaging apps, instead of coming out dark.
+- A live exposure slider under the result: it redraws from a cached linear
+  buffer in a few tens of milliseconds, so you can dial the brightness in by
+  eye without re-running a conversion.
+- A before/after view with a draggable wipe, comparing the converted file
+  against the way your device already renders the HDR original.
+- Every setting has an **i** button explaining what it changes.
 - Sensible defaults for a normal HDR AVIF; every knob is optional.
 - JPEG, PNG or WebP output with a quality slider and an optional size limit.
 - The result preview *is* the encoded file, so downloading it, right-clicking it
@@ -42,7 +48,7 @@ zscale=p=bt709,tonemap=tonemap=mobius:desat=2,zscale=t=bt709:m=bt709:r=tv" outpu
 2. **Linearise.** The source transfer function (PQ / HLG / sRGB / BT.709) is
    inverted, with HLG also getting its OOTF. `1.0` means 100 nits, the same
    reference white FFmpeg uses.
-3. **Adapt.** The scene's log-average luminance is measured and the image is
+3. **Adapt.** The scene's diffuse white is measured and the image is
    exposed around it. This is the one step the FFmpeg chain above does *not*
    do, and it is why that chain leaves so many HDR photos looking dark — see
    [Brightness](#brightness) below.
@@ -65,18 +71,33 @@ display keeps its original, genuinely low nit values. On an HDR screen that is
 exactly right; on a phone, a laptop or WhatsApp it lands in the display's black
 floor and the picture looks far darker than the original did.
 
-A real photo of a lamp-lit room measures a median of **0.56 nits**, with a
-log-average of 0.57. Reproduced faithfully, that is a median of 17/255 — a
-correct answer to the wrong question.
+A real photo of a lamp-lit room measures a median of **0.56 nits**. Reproduced
+faithfully, that is a median of 17/255 — a correct answer to the wrong
+question.
 
-So the tool restores the step Reinhard's *Photographic Tone Reproduction*
-starts with and FFmpeg deliberately skips: scaling the scene so its log-average
-lands on a target key before the curve runs. FFmpeg omits it because measuring
-per frame makes video flicker, which is not a concern for a single still.
+So the tool adds the step FFmpeg deliberately skips, and exposes the picture
+the way a photographer would before the curve runs. FFmpeg omits it because
+measuring per frame makes video flicker, which cannot happen for a single
+still.
+
+The measurement anchors on the scene's **diffuse white**: the level the
+brightest *ordinary* surfaces sit at, as opposed to speculars and light
+sources, estimated as the 90th percentile of the lit pixels and mapped to 75
+nits. That leaves the top of the scene room to roll off into white instead of
+clipping there.
+
+Reinhard's log-average key is the textbook estimator for this, and it was the
+first thing tried here, but it is not robust for the job: it weighs every pixel
+equally, so a letterboxed frame reports a far lower average than the same
+picture without the bars. One real 2560×1440 screenshot is **29% pure black**,
+which dragged its log-average below that of a much darker photo and demanded a
+64× correction — a badly blown-out result. A high percentile of the lit pixels
+measures the same quantity, ignores matte borders entirely, and barely moves
+when the bars are cropped away (3.65× versus 3.49× on that file).
 
 | Mode | What it does |
 | --- | --- |
-| **Auto exposure** (default) | Measures the scene's log-average luminance and exposes around it, with the key nudged by where the scene sits between its own shadow and highlight ends. The room above becomes a median of 88/255 with 0.04% clipping. |
+| **Auto exposure** (default) | Finds the scene's diffuse white and puts it just below SDR white. The room above becomes a median of 84/255 with 0.03% clipping; the letterboxed screenshot lands at 62/255 with none. |
 | HDR reference white (203 nits) | Maps BT.2408 diffuse white to SDR white. Standards-correct, still dark for dim scenes. |
 | Absolute (FFmpeg, 100 nits) | The `npl=100` behaviour of the command line above, for matching FFmpeg output exactly. |
 
@@ -84,6 +105,20 @@ Auto exposure only runs on genuine PQ and HLG sources. An SDR file has already
 been graded for SDR, so re-exposing it would fight the grade it arrived with;
 those files convert identically in every mode. The **Exposure** slider still
 composes on top, so `+1` is one stop above whichever mode is selected.
+
+### Adjusting it by eye
+
+The slider under the result is live. `prepareScene` caches the image after the
+transfer function has been inverted — the expensive part, and the part that
+does not depend on exposure — so `renderPreview` only has to redo the gain,
+the gamut matrix, the curve and the sRGB encode: about 37 ms for a 2560×1440
+image. While you drag, the pane shows that canvas; when you let go the file is
+re-encoded at full resolution and the preview becomes the real file again.
+
+Both paths share `resolveAdaptation`, `resolvePeak`, `createCurve` and
+`tonemapPixel`, and the release reuses the measurement the preview exposed
+from, so the brightness cannot shift under you when you stop dragging. A test
+asserts the two agree to within 0.87/255.
 
 ## Settings
 
