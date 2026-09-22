@@ -16,7 +16,8 @@ runs locally in the browser — no upload, no server.
   messaging apps, instead of coming out dark.
 - A live exposure slider under the result: it redraws from a cached linear
   buffer in a few tens of milliseconds, so you can dial the brightness in by
-  eye without re-running a conversion.
+  eye without re-running a conversion. Converting again starts from the
+  default exposure.
 - A before/after view with a draggable wipe, comparing the converted file
   against the way your device already renders the HDR original.
 - Every setting has an **i** button explaining what it changes.
@@ -119,6 +120,10 @@ Both paths share `resolveAdaptation`, `resolvePeak`, `createCurve` and
 `tonemapPixel`, and the release reuses the measurement the preview exposed
 from, so the brightness cannot shift under you when you stop dragging. A test
 asserts the two agree to within 0.87/255.
+
+The slider is a tweak to the result you are looking at, not a setting, so
+pressing **Convert** returns it to zero. **Restore defaults**, at the end of
+the settings row, puts every control back to the recommended baseline.
 
 ## Settings
 

@@ -678,6 +678,10 @@ async function convertItem(item, settings, onProgress) {
 
 async function convertAllItems() {
   if (!state.items.length) return;
+  // Exposure is a preview adjustment made against the previous result, so a new
+  // conversion starts from the default again.
+  elements.exposure.value = "0";
+  updateSettingVisibility();
   const settings = readSettings();
   persistSettings();
 
