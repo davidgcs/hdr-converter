@@ -110,6 +110,19 @@ function createSampler(source, matrixName) {
   const maxValue = (1 << bitDepth) - 1;
   const shift = bitDepth - 8;
   const fullRange = source.colorSpace.fullRange;
+
+  // Identity matrix: the planes already hold R, G and B, so no matrix applies.
+  if (matrixName === "rgb") {
+    const offset = fullRange ? 0 : 16 << shift;
+    const scale = fullRange ? 1 / maxValue : 1 / (219 << shift);
+    return (x, y, out) => {
+      out[0] = (planeY.data[y * planeY.stride + x] - offset) * scale;
+      out[1] = (planeU.data[y * planeU.stride + x] - offset) * scale;
+      out[2] = (planeV.data[y * planeV.stride + x] - offset) * scale;
+      out[3] = planeA ? planeA.data[y * planeA.stride + x] / maxValue : 1;
+    };
+  }
+
   const lumaOffset = fullRange ? 0 : 16 << shift;
   const lumaScale = fullRange ? 1 / maxValue : 1 / (219 << shift);
   const chromaOffset = fullRange ? 1 << (bitDepth - 1) : 128 << shift;
@@ -210,7 +223,10 @@ export async function convert(source, settings, crop, { onProgress, signal } = {
   const area = normalizeCrop(source, crop);
   const { transfer, primaries, matrix } = transferOf(source, options);
   const matrixName = source.kind === "rgba" ? "rgb" : matrix;
-  const coeffs = LUMA_COEFFICIENTS[matrix] || LUMA_COEFFICIENTS.bt709;
+  // With the identity matrix there is no signalled luma matrix, so highlight
+  // desaturation uses the coefficients that belong to the primaries.
+  const coeffs = LUMA_COEFFICIENTS[matrix]
+    || LUMA_COEFFICIENTS[primaries === "bt2020" ? "bt2020-ncl" : "bt709"];
   const lut = buildLut(transfer);
 
   const peak = resolvePeak(source, area, options, { transfer, matrix: matrixName, lut, coeffs });
