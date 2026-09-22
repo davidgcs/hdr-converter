@@ -136,6 +136,15 @@
             </label>
 
             <label class="setting">
+              <span class="field-label" data-i18n="BRIGHTNESS_LABEL">Brightness</span>
+              <select id="brightness">
+                <option value="auto" data-i18n="BRIGHTNESS_AUTO">Auto exposure (recommended)</option>
+                <option value="reference" data-i18n="BRIGHTNESS_REFERENCE">HDR reference white (203 nits)</option>
+                <option value="standard" data-i18n="BRIGHTNESS_STANDARD">Absolute (FFmpeg, 100 nits)</option>
+              </select>
+            </label>
+
+            <label class="setting">
               <span class="field-label" data-i18n="PEAK_LABEL">Source peak brightness</span>
               <select id="peak-mode">
                 <option value="auto" data-i18n="PEAK_AUTO">Auto (measured)</option>
@@ -262,7 +271,7 @@
                   Convert an image to see the SDR result.
                 </div>
                 <div class="page" id="result-page" hidden>
-                  <canvas id="result-canvas" class="document-canvas"></canvas>
+                  <img id="result-image" class="document-canvas" alt="">
                 </div>
               </div>
               <p class="pane-note" id="result-note"></p>
@@ -278,6 +287,9 @@
               <input id="add-files" type="file" multiple accept="image/avif,image/heic,image/heif,image/jpeg,image/png,image/webp">
             </label>
             <div class="export-actions">
+              <button id="open-tab" class="button secondary" type="button" disabled data-i18n="OPEN_TAB">
+                Open in new tab
+              </button>
               <button id="download-all" class="button secondary" type="button" disabled hidden data-i18n="DOWNLOAD_ALL">
                 Download all
               </button>

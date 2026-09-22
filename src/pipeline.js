@@ -35,6 +35,13 @@ export const DEFAULT_SETTINGS = Object.freeze({
   /** "auto" measures the peak, "standard" uses the transfer nominal peak. */
   peakMode: "auto",
   peakNits: 1000,
+  /**
+   * Luminance adaptation before the tone curve:
+   * "auto"      — expose from the scene statistics (see resolveAdaptation),
+   * "standard"  — FFmpeg's absolute mapping, 100 nits is SDR white,
+   * "reference" — BT.2408, HDR reference white (203 nits) is SDR white.
+   */
+  brightness: "auto",
   /** Exposure compensation in stops, applied in linear light. */
   exposure: 0,
   /** "auto" trusts the file tagging. */
@@ -47,6 +54,24 @@ export const DEFAULT_SETTINGS = Object.freeze({
 
 const LUT_SIZE = 4096;
 const BAND_ROWS = 96;
+
+/** ITU-R BT.2408 HDR reference (graphics) white, in nits. */
+const HDR_REFERENCE_WHITE = 203;
+
+/** Luminance histogram used by the scene measurement, in log2 space. */
+const HISTOGRAM_BINS = 512;
+const HISTOGRAM_MIN_LOG2 = -24;
+const HISTOGRAM_MAX_LOG2 = 8;
+const LUMA_EPSILON = 1e-6;
+
+/**
+ * Middle grey the adaptive mode aims for, in REFERENCE_WHITE units. Reinhard's
+ * paper uses 0.18; a slightly lower key keeps dim scenes looking dim rather
+ * than pushing every night shot up to daylight.
+ */
+const KEY_TARGET = 0.11;
+const MIN_ADAPTATION = 1 / 8;
+const MAX_ADAPTATION = 64;
 
 function transferOf(source, settings) {
   switch (settings.inputOverride) {
@@ -167,12 +192,24 @@ function createSampler(source, matrixName) {
  * Browsers do not expose mastering metadata, so the content is measured
  * instead, on a subsampled grid to keep it cheap.
  */
-function measurePeak(source, crop, transfer, matrixName, lut, coeffs) {
+/**
+ * Measures the (cropped) image in one pass: the signal peak plus the
+ * statistics needed to expose it.
+ *
+ * The peak alone plays the role of `ff_determine_signal_peak`, which
+ * browsers cannot answer because they expose no mastering metadata. The
+ * luminance histogram on top of it feeds the adaptation stage below.
+ */
+function measureScene(source, crop, transfer, matrixName, lut, coeffs) {
   const sample = createSampler(source, matrixName);
   const pixel = new Float32Array(4);
   const step = Math.max(1, Math.round(Math.min(crop.width, crop.height) / 720));
   const isHlg = transfer === "hlg";
+  const counts = new Uint32Array(HISTOGRAM_BINS);
+  const span = HISTOGRAM_MAX_LOG2 - HISTOGRAM_MIN_LOG2;
   let peak = 0;
+  let logSum = 0;
+  let total = 0;
 
   for (let y = 0; y < crop.height; y += step) {
     for (let x = 0; x < crop.width; x += step) {
@@ -188,25 +225,83 @@ function measurePeak(source, crop, transfer, matrixName, lut, coeffs) {
       }
       const value = Math.max(r, g, b);
       if (value > peak) peak = value;
+
+      const luma = Math.max(0, coeffs.cr * r + coeffs.cg * g + coeffs.cb * b);
+      const log2Luma = Math.log2(luma + LUMA_EPSILON);
+      logSum += log2Luma;
+      total++;
+      const bin = Math.floor(((log2Luma - HISTOGRAM_MIN_LOG2) / span) * HISTOGRAM_BINS);
+      counts[Math.max(0, Math.min(HISTOGRAM_BINS - 1, bin))]++;
     }
   }
-  return peak;
+
+  const percentile = (fraction) => {
+    const target = total * fraction;
+    let seen = 0;
+    for (let bin = 0; bin < HISTOGRAM_BINS; bin++) {
+      seen += counts[bin];
+      if (seen >= target) {
+        return HISTOGRAM_MIN_LOG2 + ((bin + 0.5) / HISTOGRAM_BINS) * span;
+      }
+    }
+    return HISTOGRAM_MAX_LOG2;
+  };
+
+  return {
+    peak,
+    logAverage: total ? Math.pow(2, logSum / total) : 0,
+    lowLog2: percentile(0.01),
+    highLog2: percentile(0.99)
+  };
 }
 
-export function resolvePeak(source, crop, settings, context) {
+export function resolvePeak(settings, scene, transfer) {
   if (settings.peakMode === "custom" || settings.peakMode === "standard") {
     const nits =
       settings.peakMode === "custom"
         ? settings.peakNits
-        : context.transfer === "pq"
+        : transfer === "pq"
           ? 10000
-          : context.transfer === "hlg"
+          : transfer === "hlg"
             ? 1000
             : REFERENCE_WHITE;
     return Math.max(1, nits / REFERENCE_WHITE);
   }
-  const measured = measurePeak(source, crop, context.transfer, context.matrix, context.lut, context.coeffs);
-  return Math.max(1, measured);
+  return Math.max(1, scene.peak);
+}
+
+/**
+ * Luminance adaptation — the stage that makes an HDR picture readable on an
+ * SDR screen.
+ *
+ * FFmpeg's `tonemap` filter maps absolute luminance: `npl=100` pins 100 nits
+ * to 1.0 and the curve only rolls off what sits above that. For video that is
+ * the right call, because re-exposing every frame would flicker. For a single
+ * picture it means a night scene stays at its true handful of nits, which an
+ * HDR screen renders beautifully and an SDR screen buries in its black floor.
+ *
+ * So we restore the stage Reinhard's paper starts with and FFmpeg leaves out:
+ * scale the image by `key / log-average luminance` before the curve. The key
+ * itself follows the scene, after "Parameter estimation for photographic tone
+ * reproduction", so a low-key picture stays moody instead of being flattened
+ * into daylight.
+ */
+export function resolveAdaptation(settings, scene, transfer) {
+  if (settings.brightness === "standard") return 1;
+  // An SDR source is already graded for an SDR screen: there is nothing to
+  // adapt, and re-exposing it would only fight the grade it arrived with.
+  if (transfer !== "pq" && transfer !== "hlg") return 1;
+  if (settings.brightness === "reference") return REFERENCE_WHITE / HDR_REFERENCE_WHITE;
+
+  const average = scene.logAverage;
+  if (!(average > 0)) return 1;
+
+  const range = scene.highLog2 - scene.lowLog2;
+  const position = range > 0
+    ? (2 * Math.log2(average) - scene.lowLog2 - scene.highLog2) / range
+    : 0;
+  const key = KEY_TARGET * Math.pow(4, Math.max(-1, Math.min(1, position)));
+  return Math.max(MIN_ADAPTATION, Math.min(MAX_ADAPTATION, key / average));
 }
 
 function yieldToBrowser() {
@@ -229,10 +324,13 @@ export async function convert(source, settings, crop, { onProgress, signal } = {
     || LUMA_COEFFICIENTS[primaries === "bt2020" ? "bt2020-ncl" : "bt709"];
   const lut = buildLut(transfer);
 
-  const peak = resolvePeak(source, area, options, { transfer, matrix: matrixName, lut, coeffs });
+  const scene = measureScene(source, area, transfer, matrixName, lut, coeffs);
+  // Adaptation happens in linear light before the curve, so the peak the curve
+  // is built around has to move with it.
+  const gain = resolveAdaptation(options, scene, transfer) * Math.pow(2, options.exposure || 0);
+  const peak = Math.max(1, resolvePeak(options, scene, transfer) * gain);
   const curve = createCurve(options.algorithm, options.param, peak);
   const gamut = rgb2rgbMatrix(primaries in COLOR_PRIMARIES ? primaries : "bt709", "bt709");
-  const gain = Math.pow(2, options.exposure || 0);
   const isHlg = transfer === "hlg";
 
   const sample = createSampler(source, matrixName);
@@ -302,7 +400,16 @@ export async function convert(source, settings, crop, { onProgress, signal } = {
     await yieldToBrowser();
   }
 
-  return { imageData: output, peak, transfer, primaries };
+  return {
+    imageData: output,
+    // The measured content peak, in REFERENCE_WHITE units, for reporting.
+    peak: Math.max(1, scene.peak),
+    // What the curve was actually built around, after adaptation.
+    curvePeak: peak,
+    gain,
+    transfer,
+    primaries
+  };
 }
 
 /** Draws converted pixels into a canvas, applying the optional size limit. */
