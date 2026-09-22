@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      id="meta-description"
+      name="description"
+      content="Convert HDR AVIF images to shareable SDR images locally in your browser."
+    >
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://davidgcs.github.io/hdr-converter/">
+    <meta property="og:title" content="HDR Converter — HDR to SDR images">
+    <meta property="og:description" content="Crop and convert HDR images to SDR locally, with FFmpeg's tone mapping curves.">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="HDR Converter — HDR to SDR images">
+    <meta name="twitter:description" content="Crop and convert HDR images to SDR locally, with FFmpeg's tone mapping curves.">
+    <title>HDR Converter — HDR to SDR images</title>
+    <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./github-brand.css">
+    <link rel="stylesheet" href="./styles.css">
+    <script src="./app.js" type="module"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <div class="github-brand">
+        <a
+          class="github-brand__profile-link"
+          href="https://github.com/davidgcs"
+          target="_blank"
+          rel="me noopener noreferrer"
+          aria-label="View @davidgcs on GitHub"
+          data-i18n-aria-label="GITHUB_PROFILE_LABEL"
+        ></a>
+        <span class="github-brand__glow" aria-hidden="true"></span>
+        <span class="github-brand__identity">
+          <span class="github-brand__mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" role="img">
+              <path d="M12 .7a11.5 11.5 0 0 0-3.64 22.41c.58.11.79-.25.79-.56v-2.23c-3.22.7-3.9-1.37-3.9-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.17.08 1.78 1.2 1.78 1.2 1.04 1.77 2.72 1.26 3.38.96.1-.75.41-1.26.74-1.55-2.57-.29-5.27-1.29-5.27-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.16 1.18a10.9 10.9 0 0 1 5.76 0c2.19-1.49 3.16-1.18 3.16-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.4-2.71 5.38-5.29 5.67.42.36.79 1.06.79 2.15v3.18c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .7Z"/>
+            </svg>
+          </span>
+          <span class="github-brand__copy">
+            <span class="github-brand__eyebrow" data-i18n="GITHUB_KICKER">Open source · Built by</span>
+            <strong>@davidgcs</strong>
+          </span>
+        </span>
+
+        <span class="github-brand__links">
+          <a
+            class="github-brand__action github-brand__repository"
+            href="https://github.com/davidgcs/hdr-converter"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="See the HDR Converter source code on GitHub"
+            data-i18n-aria-label="GITHUB_REPOSITORY_LABEL"
+          >
+            <span data-i18n="GITHUB_REPOSITORY_CTA">See code</span>
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7.5 4.5 13 10l-5.5 5.5"/></svg>
+          </a>
+        </span>
+      </div>
+
+      <header class="site-header">
+        <div class="app-intro">
+          <h1>HDR Converter</h1>
+          <p class="subtitle" data-i18n="APP_SUBTITLE">
+            Local HDR to SDR conversion for images that look right everywhere.
+          </p>
+          <p class="quick-guide" data-i18n="QUICK_GUIDE">
+            Open an HDR image, crop it if you need to, press convert and download the SDR result. Everything stays in your browser.
+          </p>
+        </div>
+
+        <div class="header-actions">
+          <span class="privacy-badge" data-i18n="LOCAL_BADGE">Processed in your browser</span>
+          <label class="language-control">
+            <span class="sr-only" data-i18n="LANGUAGE_LABEL">Language</span>
+            <select id="language" aria-label="Language" data-i18n-aria-label="LANGUAGE_LABEL">
+              <option value="en">English</option>
+              <option value="es">Español</option>
+            </select>
+          </label>
+        </div>
+      </header>
+
+      <section class="card controls-card" aria-label="Conversion controls" data-i18n-aria-label="CONTROLS_LABEL">
+        <div class="toolbar">
+          <div class="toolbar-row document-controls">
+            <label class="button file-button">
+              <span data-i18n="OPEN_FILE">Open images</span>
+              <input id="file" type="file" multiple accept="image/avif,image/heic,image/heif,image/jpeg,image/png,image/webp">
+            </label>
+
+            <button id="convert" class="button" type="button" disabled data-i18n="CONVERT">Convert</button>
+
+            <button id="crop" class="button secondary" type="button" disabled aria-pressed="false" data-i18n="CROP_ENABLE">
+              Crop
+            </button>
+            <button id="crop-reset" class="button secondary" type="button" disabled data-i18n="CROP_RESET">
+              Reset crop
+            </button>
+            <button id="clear" class="button secondary" type="button" disabled data-i18n="CLEAR">Clear</button>
+
+            <button
+              id="theme"
+              class="button secondary theme-toggle"
+              type="button"
+              role="switch"
+              aria-checked="false"
+              aria-label="Switch to dark theme"
+            >
+              <span class="theme-toggle__icon" aria-hidden="true">
+                <svg class="theme-toggle__sun" viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="4"/>
+                  <path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"/>
+                </svg>
+                <svg class="theme-toggle__moon" viewBox="0 0 24 24">
+                  <path d="M20.5 15.2A8.5 8.5 0 0 1 8.8 3.5a8.5 8.5 0 1 0 11.7 11.7Z"/>
+                </svg>
+              </span>
+            </button>
+          </div>
+
+          <div class="toolbar-row settings-panel">
+            <label class="setting">
+              <span class="field-label" data-i18n="TONEMAP_LABEL">Tone mapping</span>
+              <select id="algorithm">
+                <option value="mobius" data-i18n="TONEMAP_MOBIUS">Mobius (recommended)</option>
+                <option value="hable" data-i18n="TONEMAP_HABLE">Hable (filmic)</option>
+                <option value="reinhard" data-i18n="TONEMAP_REINHARD">Reinhard</option>
+                <option value="gamma" data-i18n="TONEMAP_GAMMA">Gamma</option>
+                <option value="linear" data-i18n="TONEMAP_LINEAR">Linear</option>
+                <option value="clip" data-i18n="TONEMAP_CLIP">Clip</option>
+                <option value="none" data-i18n="TONEMAP_NONE">None</option>
+              </select>
+            </label>
+
+            <label class="setting">
+              <span class="field-label" data-i18n="PEAK_LABEL">Source peak brightness</span>
+              <select id="peak-mode">
+                <option value="auto" data-i18n="PEAK_AUTO">Auto (measured)</option>
+                <option value="standard" data-i18n="PEAK_STANDARD">Format standard</option>
+                <option value="custom" data-i18n="PEAK_CUSTOM">Custom</option>
+              </select>
+            </label>
+
+            <label class="setting setting--hidden" id="peak-nits-field">
+              <span class="field-label" data-i18n="PEAK_NITS_LABEL">Peak nits</span>
+              <input id="peak-nits" type="number" min="100" max="10000" step="100" value="1000">
+            </label>
+
+            <label class="setting setting--range">
+              <span class="field-label" data-i18n="DESAT_LABEL">Highlight desaturation</span>
+              <input id="desat" type="range" min="0" max="6" step="0.5" value="2">
+              <output id="desat-value" for="desat">2</output>
+            </label>
+
+            <label class="setting">
+              <span class="field-label" data-i18n="FORMAT_LABEL">Output format</span>
+              <select id="format">
+                <option value="image/jpeg" data-i18n="FORMAT_JPEG">JPEG</option>
+                <option value="image/png" data-i18n="FORMAT_PNG">PNG</option>
+                <option value="image/webp" data-i18n="FORMAT_WEBP">WebP</option>
+              </select>
+            </label>
+
+            <label class="setting setting--range" id="quality-field">
+              <span class="field-label" data-i18n="QUALITY_LABEL">Quality</span>
+              <input id="quality" type="range" min="50" max="100" step="1" value="92">
+              <output id="quality-value" for="quality">92</output>
+            </label>
+
+            <label class="setting">
+              <span class="field-label" data-i18n="ASPECT_LABEL">Crop ratio</span>
+              <select id="aspect">
+                <option value="original" data-i18n="ASPECT_ORIGINAL">Original</option>
+                <option value="free" data-i18n="ASPECT_FREE">Free</option>
+                <option value="1:1" data-i18n="ASPECT_SQUARE">1:1</option>
+                <option value="16:9" data-i18n="ASPECT_16_9">16:9</option>
+                <option value="4:3" data-i18n="ASPECT_4_3">4:3</option>
+                <option value="3:2" data-i18n="ASPECT_3_2">3:2</option>
+              </select>
+            </label>
+          </div>
+
+          <details class="advanced">
+            <summary data-i18n="ADVANCED_SUMMARY">Advanced settings</summary>
+            <div class="toolbar-row settings-panel">
+              <label class="setting">
+                <span class="field-label" data-i18n="INPUT_LABEL">Read source as</span>
+                <select id="input-override">
+                  <option value="auto" data-i18n="INPUT_AUTO">Auto (file tagging)</option>
+                  <option value="pq" data-i18n="INPUT_PQ">HDR10 / PQ BT.2020</option>
+                  <option value="hlg" data-i18n="INPUT_HLG">HLG BT.2020</option>
+                  <option value="sdr" data-i18n="INPUT_SDR">SDR sRGB</option>
+                </select>
+              </label>
+
+              <label class="setting">
+                <span class="field-label" data-i18n="PARAM_LABEL">Curve parameter</span>
+                <input id="param" type="number" step="0.05" min="0" placeholder="auto">
+              </label>
+
+              <label class="setting setting--range">
+                <span class="field-label" data-i18n="EXPOSURE_LABEL">Exposure (stops)</span>
+                <input id="exposure" type="range" min="-3" max="3" step="0.25" value="0">
+                <output id="exposure-value" for="exposure">0</output>
+              </label>
+
+              <label class="setting">
+                <span class="field-label" data-i18n="MAXDIM_LABEL">Limit longest side (px)</span>
+                <select id="max-dimension">
+                  <option value="0" data-i18n="MAXDIM_ORIGINAL">Original size</option>
+                  <option value="4096">4096</option>
+                  <option value="2560">2560</option>
+                  <option value="1920">1920</option>
+                  <option value="1280">1280</option>
+                </select>
+              </label>
+
+              <button id="reset-settings" class="button secondary" type="button" data-i18n="RESET_SETTINGS">
+                Restore defaults
+              </button>
+            </div>
+          </details>
+        </div>
+
+        <p class="status" id="status" aria-live="polite">
+          Open an HDR image (AVIF, HEIF, JPEG, PNG or WebP) to begin.
+        </p>
+        <div
+          class="progress"
+          role="progressbar"
+          aria-labelledby="status"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="0"
+        >
+          <div class="progress-bar" id="bar"></div>
+        </div>
+      </section>
+
+      <div class="workspace">
+        <main class="card document-card">
+          <div class="panes">
+            <section class="pane">
+              <h2 data-i18n="SOURCE_TITLE">Source (HDR)</h2>
+              <div class="stage" id="source-stage">
+                <div class="empty" id="source-empty" data-i18n="EMPTY_SOURCE">No image loaded.</div>
+                <div class="page" id="source-page" hidden>
+                  <img id="source-image" alt="">
+                  <div class="overlay" id="crop-overlay"></div>
+                </div>
+              </div>
+              <p class="pane-note" id="source-note"></p>
+            </section>
+
+            <section class="pane">
+              <h2 data-i18n="RESULT_TITLE">Result (SDR)</h2>
+              <div class="stage" id="result-stage">
+                <div class="empty" id="result-empty" data-i18n="EMPTY_RESULT">
+                  Convert an image to see the SDR result.
+                </div>
+                <div class="page" id="result-page" hidden>
+                  <canvas id="result-canvas" class="document-canvas"></canvas>
+                </div>
+              </div>
+              <p class="pane-note" id="result-note"></p>
+            </section>
+          </div>
+
+          <div class="queue" id="queue" hidden aria-label="Loaded images" data-i18n-aria-label="QUEUE_LABEL"></div>
+
+          <div class="document-save">
+            <label class="button secondary file-button add-pages-button">
+              <span aria-hidden="true">+</span>
+              <span data-i18n="ADD_FILES">Add images</span>
+              <input id="add-files" type="file" multiple accept="image/avif,image/heic,image/heif,image/jpeg,image/png,image/webp">
+            </label>
+            <div class="export-actions">
+              <button id="download-all" class="button secondary" type="button" disabled hidden data-i18n="DOWNLOAD_ALL">
+                Download all
+              </button>
+              <button id="download" class="button" type="button" disabled data-i18n="DOWNLOAD">Download</button>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <noscript>
+      HDR Converter requires JavaScript. / HDR Converter necesita JavaScript.
+    </noscript>
+  </body>
+</html>
