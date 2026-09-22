@@ -64,6 +64,8 @@ export const translations = {
     INPUT_HLG: "HLG BT.2020",
     INPUT_SDR: "SDR sRGB",
     RESET_SETTINGS: "Restore defaults",
+    RESET_SETTINGS_TITLE:
+      "Put every setting back to the recommended baseline for a normal HDR photo.",
     SOURCE_TITLE: "Source (HDR)",
     RESULT_TITLE: "Result (SDR)",
     EMPTY_SOURCE: "No image loaded.",
@@ -184,7 +186,9 @@ export const translations = {
     INPUT_PQ: "HDR10 / PQ BT.2020",
     INPUT_HLG: "HLG BT.2020",
     INPUT_SDR: "SDR sRGB",
-    RESET_SETTINGS: "Restaurar valores",
+    RESET_SETTINGS: "Restablecer ajustes",
+    RESET_SETTINGS_TITLE:
+      "Devuelve todos los ajustes al punto de partida recomendado para una foto HDR normal.",
     SOURCE_TITLE: "Origen (HDR)",
     RESULT_TITLE: "Resultado (SDR)",
     EMPTY_SOURCE: "No hay ninguna imagen cargada.",

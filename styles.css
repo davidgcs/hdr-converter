@@ -10,6 +10,12 @@
   box-sizing: border-box;
 }
 
+/* Several elements below set an explicit `display`, which outranks the `hidden`
+   attribute's user-agent `display: none` and leaves them on screen. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: #f5f7fb;
@@ -165,6 +171,10 @@ input[type="number"] {
   gap: 5px;
 }
 
+.settings-reset {
+  margin-left: auto;
+}
+
 .setting--range {
   grid-template-columns: minmax(0, 1fr) 4ch;
   align-items: center;
@@ -304,13 +314,18 @@ input[type="range"] {
 .panes {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-rows: auto 1fr auto auto;
   gap: 18px;
 }
 
+/* Both panes share the parent's row tracks, so the source and the result
+   stages are always exactly the same height even though only the result pane
+   carries an exposure slider. */
 .pane {
   display: grid;
+  grid-row: span 4;
+  grid-template-rows: subgrid;
   min-width: 0;
-  align-content: start;
   gap: 8px;
 }
 

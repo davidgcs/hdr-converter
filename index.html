@@ -91,8 +91,6 @@
               <input id="file" type="file" multiple accept="image/avif,image/heic,image/heif,image/jpeg,image/png,image/webp">
             </label>
 
-            <button id="convert" class="button" type="button" disabled data-i18n="CONVERT">Convert</button>
-
             <button id="crop" class="button secondary" type="button" disabled aria-pressed="false" data-i18n="CROP_ENABLE">
               Crop
             </button>
@@ -190,6 +188,10 @@
                 <option value="3:2" data-i18n="ASPECT_3_2">3:2</option>
               </select>
             </label>
+
+            <button id="reset-settings" class="button secondary settings-reset" type="button" data-i18n="RESET_SETTINGS" data-i18n-title="RESET_SETTINGS_TITLE">
+              Restore defaults
+            </button>
           </div>
 
           <details class="advanced">
@@ -226,10 +228,6 @@
                   <option value="1280">1280</option>
                 </select>
               </label>
-
-              <button id="reset-settings" class="button secondary" type="button" data-i18n="RESET_SETTINGS">
-                Restore defaults
-              </button>
             </div>
           </details>
         </div>
@@ -281,6 +279,13 @@
                         <path d="M15 7h5v10h-5z"/>
                       </svg>
                     </button>
+                    <button id="open-tab" class="icon-button" type="button" disabled data-i18n-aria-label="OPEN_TAB" data-i18n-title="OPEN_TAB">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M14 4h6v6"/>
+                        <path d="M20 4 11 13"/>
+                        <path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>
+                      </svg>
+                    </button>
                     <button id="download" class="icon-button icon-button--primary" type="button" disabled data-i18n-aria-label="DOWNLOAD" data-i18n-title="DOWNLOAD">
                       <svg viewBox="0 0 24 24" aria-hidden="true">
                         <path d="M12 4v10"/>
@@ -291,6 +296,7 @@
                   </div>
                 </div>
               </div>
+              <p class="pane-note" id="result-note"></p>
               <div class="live-exposure" id="live-exposure" hidden>
                 <span class="field-label" id="live-exposure-label" data-i18n="LIVE_EXPOSURE">Exposure</span>
                 <input
@@ -305,7 +311,6 @@
                 <output id="live-exposure-value" for="live-exposure-range">0.00</output>
                 <button id="live-exposure-reset" class="link-button" type="button" data-i18n="RESET">Reset</button>
               </div>
-              <p class="pane-note" id="result-note"></p>
             </section>
           </div>
 
@@ -318,12 +323,10 @@
               <input id="add-files" type="file" multiple accept="image/avif,image/heic,image/heif,image/jpeg,image/png,image/webp">
             </label>
             <div class="export-actions">
-              <button id="open-tab" class="button secondary" type="button" disabled data-i18n="OPEN_TAB">
-                Open in new tab
-              </button>
               <button id="download-all" class="button secondary" type="button" disabled hidden data-i18n="DOWNLOAD_ALL">
                 Download all
               </button>
+              <button id="convert" class="button" type="button" disabled data-i18n="CONVERT">Convert</button>
             </div>
           </div>
         </main>
