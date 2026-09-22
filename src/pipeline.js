@@ -65,13 +65,23 @@ const HISTOGRAM_MAX_LOG2 = 8;
 const LUMA_EPSILON = 1e-6;
 
 /**
- * Middle grey the adaptive mode aims for, in REFERENCE_WHITE units. Reinhard's
- * paper uses 0.18; a slightly lower key keeps dim scenes looking dim rather
- * than pushing every night shot up to daylight.
+ * Pixels below this (0.1 nits) are treated as black and left out of the scene
+ * statistics. Letterbox bars, matte borders and crushed shadows carry no
+ * tonal information, but there can be enough of them to dominate an average.
  */
-const KEY_TARGET = 0.11;
-const MIN_ADAPTATION = 1 / 8;
-const MAX_ADAPTATION = 64;
+const BLACK_FLOOR = 0.001;
+
+/**
+ * The adaptive mode anchors on the scene's diffuse white: the luminance the
+ * brightest *ordinary* surfaces sit at, as opposed to speculars and light
+ * sources. The 90th percentile of the lit pixels estimates it well, and
+ * mapping it to 75 nits leaves the top of the scene room to roll off into
+ * white instead of clipping there.
+ */
+const DIFFUSE_PERCENTILE = 0.9;
+const DIFFUSE_TARGET = 0.75;
+const MIN_ADAPTATION = 1 / 2;
+const MAX_ADAPTATION = 32;
 
 function transferOf(source, settings) {
   switch (settings.inputOverride) {
@@ -209,7 +219,7 @@ function measureScene(source, crop, transfer, matrixName, lut, coeffs) {
   const span = HISTOGRAM_MAX_LOG2 - HISTOGRAM_MIN_LOG2;
   let peak = 0;
   let logSum = 0;
-  let total = 0;
+  let lit = 0;
 
   for (let y = 0; y < crop.height; y += step) {
     for (let x = 0; x < crop.width; x += step) {
@@ -227,31 +237,36 @@ function measureScene(source, crop, transfer, matrixName, lut, coeffs) {
       if (value > peak) peak = value;
 
       const luma = Math.max(0, coeffs.cr * r + coeffs.cg * g + coeffs.cb * b);
+      // Black pixels are excluded so that letterbox bars cannot move the
+      // exposure: cropping them away has to leave the result unchanged.
+      if (luma <= BLACK_FLOOR) continue;
       const log2Luma = Math.log2(luma + LUMA_EPSILON);
       logSum += log2Luma;
-      total++;
+      lit++;
       const bin = Math.floor(((log2Luma - HISTOGRAM_MIN_LOG2) / span) * HISTOGRAM_BINS);
       counts[Math.max(0, Math.min(HISTOGRAM_BINS - 1, bin))]++;
     }
   }
 
   const percentile = (fraction) => {
-    const target = total * fraction;
+    if (!lit) return 0;
+    const target = lit * fraction;
     let seen = 0;
     for (let bin = 0; bin < HISTOGRAM_BINS; bin++) {
       seen += counts[bin];
       if (seen >= target) {
-        return HISTOGRAM_MIN_LOG2 + ((bin + 0.5) / HISTOGRAM_BINS) * span;
+        return Math.pow(2, HISTOGRAM_MIN_LOG2 + ((bin + 0.5) / HISTOGRAM_BINS) * span);
       }
     }
-    return HISTOGRAM_MAX_LOG2;
+    return Math.pow(2, HISTOGRAM_MAX_LOG2);
   };
 
   return {
     peak,
-    logAverage: total ? Math.pow(2, logSum / total) : 0,
-    lowLog2: percentile(0.01),
-    highLog2: percentile(0.99)
+    lit,
+    logAverage: lit ? Math.pow(2, logSum / lit) : 0,
+    /** Estimated diffuse white, in REFERENCE_WHITE units. */
+    diffuse: percentile(DIFFUSE_PERCENTILE)
   };
 }
 
@@ -277,14 +292,21 @@ export function resolvePeak(settings, scene, transfer) {
  * FFmpeg's `tonemap` filter maps absolute luminance: `npl=100` pins 100 nits
  * to 1.0 and the curve only rolls off what sits above that. For video that is
  * the right call, because re-exposing every frame would flicker. For a single
- * picture it means a night scene stays at its true handful of nits, which an
- * HDR screen renders beautifully and an SDR screen buries in its black floor.
+ * picture it means a dim scene stays at its true handful of nits, which an HDR
+ * screen renders beautifully and an SDR screen buries in its black floor.
  *
- * So we restore the stage Reinhard's paper starts with and FFmpeg leaves out:
- * scale the image by `key / log-average luminance` before the curve. The key
- * itself follows the scene, after "Parameter estimation for photographic tone
- * reproduction", so a low-key picture stays moody instead of being flattened
- * into daylight.
+ * So the image is exposed before the curve runs, the way a photographer sets
+ * exposure: find the scene's diffuse white — the level the brightest ordinary
+ * surfaces sit at, ignoring speculars and light sources — and put it just
+ * below SDR white, leaving the rest of the range to roll off into the
+ * highlights.
+ *
+ * Reinhard's log-average key is the textbook estimator here, but it is not
+ * robust for this job: it weighs every pixel equally, so a letterboxed frame
+ * (29% pure black in one real case) reports a far lower average than the same
+ * picture cropped, and the correction explodes. A high percentile of the lit
+ * pixels measures the same thing without that failure mode, and is invariant
+ * to how much matte surrounds the image.
  */
 export function resolveAdaptation(settings, scene, transfer) {
   if (settings.brightness === "standard") return 1;
@@ -293,15 +315,9 @@ export function resolveAdaptation(settings, scene, transfer) {
   if (transfer !== "pq" && transfer !== "hlg") return 1;
   if (settings.brightness === "reference") return REFERENCE_WHITE / HDR_REFERENCE_WHITE;
 
-  const average = scene.logAverage;
-  if (!(average > 0)) return 1;
-
-  const range = scene.highLog2 - scene.lowLog2;
-  const position = range > 0
-    ? (2 * Math.log2(average) - scene.lowLog2 - scene.highLog2) / range
-    : 0;
-  const key = KEY_TARGET * Math.pow(4, Math.max(-1, Math.min(1, position)));
-  return Math.max(MIN_ADAPTATION, Math.min(MAX_ADAPTATION, key / average));
+  const diffuse = scene.diffuse;
+  if (!(diffuse > 0)) return 1;
+  return Math.max(MIN_ADAPTATION, Math.min(MAX_ADAPTATION, DIFFUSE_TARGET / diffuse));
 }
 
 function yieldToBrowser() {
@@ -309,11 +325,145 @@ function yieldToBrowser() {
 }
 
 /**
+ * Linearises the (cropped) source once so the exposure slider can be live.
+ *
+ * Everything up to and including the transfer-function inversion is fixed for
+ * a given file and crop: unpacking the samples, upsampling chroma, the YUV
+ * matrix and the LUT are by far the expensive part of a conversion, and none
+ * of them depend on exposure. Caching the result lets `renderPreview` redraw
+ * from a slider with only the cheap per-pixel maths left to do.
+ *
+ * The buffer is box-filtered down to `maxPixels` because it only feeds the
+ * on-screen preview; the downloadable file is always rendered by `convert`
+ * at full resolution.
+ *
+ * Scene statistics are measured from the *source*, not from this reduced
+ * buffer, so the preview and the final render always resolve the same
+ * exposure and cannot disagree about brightness.
+ */
+export function prepareScene(source, settings, crop, { maxPixels = 2.2e6 } = {}) {
+  const options = { ...DEFAULT_SETTINGS, ...settings };
+  const area = normalizeCrop(source, crop);
+  const { transfer, primaries, matrix } = transferOf(source, options);
+  const matrixName = source.kind === "rgba" ? "rgb" : matrix;
+  const coeffs = LUMA_COEFFICIENTS[matrix]
+    || LUMA_COEFFICIENTS[primaries === "bt2020" ? "bt2020-ncl" : "bt709"];
+  const lut = buildLut(transfer);
+  const scene = measureScene(source, area, transfer, matrixName, lut, coeffs);
+
+  const step = Math.max(1, Math.ceil(Math.sqrt((area.width * area.height) / maxPixels)));
+  const width = Math.max(1, Math.floor(area.width / step));
+  const height = Math.max(1, Math.floor(area.height / step));
+
+  const sample = createSampler(source, matrixName);
+  const linear = new Float32Array(width * height * 3);
+  const alpha = new Float32Array(width * height);
+  const pixel = new Float32Array(4);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let a = 0;
+      let taken = 0;
+      // Box filter, so downscaling the preview does not alias the highlights
+      // into something the full-resolution render will not reproduce.
+      for (let dy = 0; dy < step; dy++) {
+        const sy = area.y + y * step + dy;
+        if (sy >= area.y + area.height) break;
+        for (let dx = 0; dx < step; dx++) {
+          const sx = area.x + x * step + dx;
+          if (sx >= area.x + area.width) break;
+          sample(sx, sy, pixel);
+          r += lutLookup(lut, transfer, pixel[0]);
+          g += lutLookup(lut, transfer, pixel[1]);
+          b += lutLookup(lut, transfer, pixel[2]);
+          a += pixel[3];
+          taken++;
+        }
+      }
+      const index = (y * width + x) * 3;
+      linear[index] = r / taken;
+      linear[index + 1] = g / taken;
+      linear[index + 2] = b / taken;
+      alpha[y * width + x] = a / taken;
+    }
+  }
+
+  return { width, height, linear, alpha, scene, transfer, primaries, coeffs };
+}
+
+/**
+ * Renders a cached scene at the requested settings.
+ *
+ * Runs the same decisions and the same maths as `convert` — it shares
+ * `resolveAdaptation`, `resolvePeak`, `createCurve` and `tonemapPixel` — so a
+ * live preview cannot drift away from the file that is finally encoded.
+ */
+export function renderPreview(prepared, settings) {
+  const options = { ...DEFAULT_SETTINGS, ...settings };
+  const { width, height, linear, alpha, scene, transfer, primaries, coeffs } = prepared;
+  const gain = resolveAdaptation(options, scene, transfer) * Math.pow(2, options.exposure || 0);
+  const peak = Math.max(1, resolvePeak(options, scene, transfer) * gain);
+  const curve = createCurve(options.algorithm, options.param, peak);
+  const gamut = rgb2rgbMatrix(primaries in COLOR_PRIMARIES ? primaries : "bt709", "bt709");
+  const isHlg = transfer === "hlg";
+
+  const output = new ImageData(width, height);
+  const out = output.data;
+  const rgb = new Float32Array(3);
+
+  for (let i = 0, index = 0, p = 0; i < width * height; i++, index += 4, p += 3) {
+    let r = linear[p];
+    let g = linear[p + 1];
+    let b = linear[p + 2];
+
+    if (isHlg) {
+      const factor = hlgOotfFactor(coeffs.cr * r + coeffs.cg * g + coeffs.cb * b, peak);
+      r *= factor;
+      g *= factor;
+      b *= factor;
+    }
+
+    if (gain !== 1) {
+      r *= gain;
+      g *= gain;
+      b *= gain;
+    }
+
+    if (gamut) {
+      const lr = r;
+      const lg = g;
+      const lb = b;
+      r = gamut[0][0] * lr + gamut[0][1] * lg + gamut[0][2] * lb;
+      g = gamut[1][0] * lr + gamut[1][1] * lg + gamut[1][2] * lb;
+      b = gamut[2][0] * lr + gamut[2][1] * lg + gamut[2][2] * lb;
+      if (r < 0) r = 0;
+      if (g < 0) g = 0;
+      if (b < 0) b = 0;
+    }
+
+    rgb[0] = r;
+    rgb[1] = g;
+    rgb[2] = b;
+    tonemapPixel(rgb, curve, options.desat, coeffs);
+
+    out[index] = Math.round(delinearizeValue("iec61966-2-1", Math.min(rgb[0], 1)) * 255);
+    out[index + 1] = Math.round(delinearizeValue("iec61966-2-1", Math.min(rgb[1], 1)) * 255);
+    out[index + 2] = Math.round(delinearizeValue("iec61966-2-1", Math.min(rgb[2], 1)) * 255);
+    out[index + 3] = Math.round(Math.min(Math.max(alpha[i], 0), 1) * 255);
+  }
+
+  return output;
+}
+
+/**
  * Converts one decoded source into 8-bit sRGB pixels.
  *
  * @returns {Promise<{imageData: ImageData, peak: number, transfer: string, primaries: string}>}
  */
-export async function convert(source, settings, crop, { onProgress, signal } = {}) {
+export async function convert(source, settings, crop, { onProgress, signal, scene: measured } = {}) {
   const options = { ...DEFAULT_SETTINGS, ...settings };
   const area = normalizeCrop(source, crop);
   const { transfer, primaries, matrix } = transferOf(source, options);
@@ -324,7 +474,7 @@ export async function convert(source, settings, crop, { onProgress, signal } = {
     || LUMA_COEFFICIENTS[primaries === "bt2020" ? "bt2020-ncl" : "bt709"];
   const lut = buildLut(transfer);
 
-  const scene = measureScene(source, area, transfer, matrixName, lut, coeffs);
+  const scene = measured || measureScene(source, area, transfer, matrixName, lut, coeffs);
   // Adaptation happens in linear light before the curve, so the peak the curve
   // is built around has to move with it.
   const gain = resolveAdaptation(options, scene, transfer) * Math.pow(2, options.exposure || 0);

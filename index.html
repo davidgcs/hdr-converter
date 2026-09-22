@@ -272,7 +272,38 @@
                 </div>
                 <div class="page" id="result-page" hidden>
                   <img id="result-image" class="document-canvas" alt="">
+                  <canvas id="result-preview" class="document-canvas" hidden></canvas>
+                  <div class="stage-actions">
+                    <button id="compare" class="icon-button" type="button" data-i18n-aria-label="COMPARE" data-i18n-title="COMPARE">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 3v18"/>
+                        <path d="M4 7h5v10H4z"/>
+                        <path d="M15 7h5v10h-5z"/>
+                      </svg>
+                    </button>
+                    <button id="download" class="icon-button icon-button--primary" type="button" disabled data-i18n-aria-label="DOWNLOAD" data-i18n-title="DOWNLOAD">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 4v10"/>
+                        <path d="m8 11 4 4 4-4"/>
+                        <path d="M5 19h14"/>
+                      </svg>
+                    </button>
+                  </div>
                 </div>
+              </div>
+              <div class="live-exposure" id="live-exposure" hidden>
+                <span class="field-label" id="live-exposure-label" data-i18n="LIVE_EXPOSURE">Exposure</span>
+                <input
+                  id="live-exposure-range"
+                  type="range"
+                  min="-3"
+                  max="3"
+                  step="0.05"
+                  value="0"
+                  aria-labelledby="live-exposure-label"
+                >
+                <output id="live-exposure-value" for="live-exposure-range">0.00</output>
+                <button id="live-exposure-reset" class="link-button" type="button" data-i18n="RESET">Reset</button>
               </div>
               <p class="pane-note" id="result-note"></p>
             </section>
@@ -293,12 +324,45 @@
               <button id="download-all" class="button secondary" type="button" disabled hidden data-i18n="DOWNLOAD_ALL">
                 Download all
               </button>
-              <button id="download" class="button" type="button" disabled data-i18n="DOWNLOAD">Download</button>
             </div>
           </div>
         </main>
       </div>
     </div>
+
+    <dialog id="compare-dialog" class="compare-dialog">
+      <div class="compare-head">
+        <h2 data-i18n="COMPARE_TITLE">Before and after</h2>
+        <button id="compare-close" class="icon-button" type="button" data-i18n-aria-label="CLOSE" data-i18n-title="CLOSE">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m6 6 12 12M18 6 6 18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="compare-viewport" id="compare-viewport">
+        <img id="compare-after" alt="">
+        <div class="compare-before" id="compare-before-clip">
+          <img id="compare-before" alt="">
+        </div>
+        <div
+          class="compare-divider"
+          id="compare-divider"
+          role="slider"
+          tabindex="0"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="50"
+          data-i18n-aria-label="COMPARE_SLIDER"
+        >
+          <span class="compare-grip" aria-hidden="true"></span>
+        </div>
+        <span class="compare-tag compare-tag--left" data-i18n="COMPARE_BEFORE">Original (HDR)</span>
+        <span class="compare-tag compare-tag--right" data-i18n="COMPARE_AFTER">Converted (SDR)</span>
+      </div>
+      <p class="compare-note" data-i18n="COMPARE_NOTE">
+        The left side is how this device already renders the HDR file.
+      </p>
+    </dialog>
 
     <noscript>
       HDR Converter requires JavaScript. / HDR Converter necesita JavaScript.

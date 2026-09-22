@@ -70,6 +70,39 @@ export const translations = {
     EMPTY_RESULT: "Convert an image to see the SDR result.",
     OPEN_TAB: "Open in new tab",
     DOWNLOAD: "Download",
+    CLOSE: "Close",
+    RESET: "Reset",
+    LIVE_EXPOSURE: "Exposure",
+    COMPARE: "Compare with the original",
+    COMPARE_TITLE: "Before and after",
+    COMPARE_BEFORE: "Original (HDR)",
+    COMPARE_AFTER: "Converted (SDR)",
+    COMPARE_SLIDER: "Move to wipe between the two images",
+    COMPARE_NOTE:
+      "The left side is how this device already renders the HDR file — the same thing another screen or a messaging app would show.",
+    TIP_TONEMAP:
+      "How light above SDR white is squeezed back into range. Mobius keeps normal tones untouched and only bends the highlights, so photos stay natural. Hable is more filmic but darker. Clip simply cuts anything too bright.",
+    TIP_BRIGHTNESS:
+      "How HDR brightness becomes SDR brightness. Auto exposure reads the scene and sets the level the way a camera would, which is what keeps dark shots from staying dark. The other two reproduce fixed reference levels instead.",
+    TIP_PEAK:
+      "The brightest level assumed to exist in the source. It sets how much headroom the curve has to compress, so a higher value protects highlights but flattens contrast.",
+    TIP_PEAK_NITS: "The peak brightness to assume, in nits.",
+    TIP_DESAT:
+      "Pulls very bright pixels towards grey so intense highlights do not turn into flat patches of colour. Raise it if bright skies or lamps look tinted, lower it to keep highlights saturated.",
+    TIP_FORMAT:
+      "The file you download. JPEG is smallest and best for sharing, PNG is lossless and keeps transparency, WebP sits in between.",
+    TIP_QUALITY:
+      "JPEG and WebP compression. Higher keeps more detail and makes a bigger file; below about 80 you may see blocking in smooth gradients.",
+    TIP_ASPECT:
+      "Constrains the crop box. Original keeps the proportions of the source, so the result is never stretched.",
+    TIP_INPUT:
+      "Overrides how the source is interpreted. Use it only when a file is tagged wrongly and the result looks washed out or far too dark.",
+    TIP_PARAM:
+      "Fine-tunes the selected curve. Leave it empty to use the FFmpeg default, which suits almost every image.",
+    TIP_EXPOSURE:
+      "Brightens or darkens the whole image before tone mapping, in camera stops. +1 doubles the light, -1 halves it. It stacks on top of the Brightness setting.",
+    TIP_MAXDIM:
+      "Shrinks the result so the longest side fits this many pixels. The aspect ratio is always preserved.",
     DOWNLOAD_ALL: "Download all",
     INITIAL_STATUS: "Open an HDR image (AVIF, HEIF, JPEG, PNG or WebP) to begin.",
     LOADING: "Decoding image…",
@@ -158,6 +191,39 @@ export const translations = {
     EMPTY_RESULT: "Convierte una imagen para ver el resultado SDR.",
     OPEN_TAB: "Abrir en una pestaña nueva",
     DOWNLOAD: "Descargar",
+    CLOSE: "Cerrar",
+    RESET: "Restablecer",
+    LIVE_EXPOSURE: "Exposición",
+    COMPARE: "Comparar con la original",
+    COMPARE_TITLE: "Antes y después",
+    COMPARE_BEFORE: "Original (HDR)",
+    COMPARE_AFTER: "Convertida (SDR)",
+    COMPARE_SLIDER: "Desplaza para comparar las dos imágenes",
+    COMPARE_NOTE:
+      "La parte izquierda es como este dispositivo ya muestra el archivo HDR, lo mismo que vería otra pantalla o una aplicación de mensajería.",
+    TIP_TONEMAP:
+      "Cómo se comprime la luz que supera el blanco SDR. Mobius deja intactos los tonos normales y solo dobla las altas luces, así que las fotos se mantienen naturales. Hable es más cinematográfico pero más oscuro. Clip simplemente recorta lo que sobra.",
+    TIP_BRIGHTNESS:
+      "Cómo se traduce el brillo HDR al brillo SDR. La exposición automática mide la escena y fija el nivel como haría una cámara, que es lo que evita que las tomas oscuras sigan oscuras. Las otras dos reproducen niveles de referencia fijos.",
+    TIP_PEAK:
+      "El nivel más brillante que se supone que existe en el origen. Define cuánto margen tiene la curva para comprimir: un valor alto protege las altas luces pero resta contraste.",
+    TIP_PEAK_NITS: "Brillo máximo que se va a suponer, en nits.",
+    TIP_DESAT:
+      "Acerca los píxeles muy brillantes al gris para que las altas luces intensas no se conviertan en manchas planas de color. Súbelo si los cielos o las lámparas se ven teñidos; bájalo para conservar la saturación.",
+    TIP_FORMAT:
+      "El archivo que vas a descargar. JPEG es el más ligero y el mejor para compartir, PNG no pierde calidad y conserva la transparencia, WebP queda entre los dos.",
+    TIP_QUALITY:
+      "Compresión de JPEG y WebP. Más alto conserva más detalle y genera un archivo mayor; por debajo de 80 pueden verse bloques en los degradados.",
+    TIP_ASPECT:
+      "Limita el recuadro de recorte. Original mantiene las proporciones del archivo, así que el resultado nunca se deforma.",
+    TIP_INPUT:
+      "Cambia cómo se interpreta el origen. Úsalo solo cuando un archivo está mal etiquetado y el resultado sale lavado o demasiado oscuro.",
+    TIP_PARAM:
+      "Ajusta la curva seleccionada. Déjalo vacío para usar el valor por defecto de FFmpeg, que sirve para casi cualquier imagen.",
+    TIP_EXPOSURE:
+      "Aclara u oscurece toda la imagen antes del mapeo de tonos, en pasos de cámara. +1 duplica la luz y -1 la reduce a la mitad. Se suma al ajuste de Brillo.",
+    TIP_MAXDIM:
+      "Reduce el resultado para que el lado más largo quepa en estos píxeles. La proporción siempre se conserva.",
     DOWNLOAD_ALL: "Descargar todo",
     INITIAL_STATUS: "Abre una imagen HDR (AVIF, HEIF, JPEG, PNG o WebP) para empezar.",
     LOADING: "Decodificando imagen…",
