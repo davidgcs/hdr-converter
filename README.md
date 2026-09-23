@@ -17,11 +17,16 @@ runs locally in the browser — no upload, no server.
   was made; shadow detail is kept above the SDR screen's black.
 - FFmpeg's `tonemap` curves (Mobius, Hable, Reinhard, …) and an auto-exposure
   mode are there as alternatives.
-- An adjust panel behind the pencil icon: exposure, contrast, highlights,
-  shadows, white point, black point and saturation, previewing live on a copy
-  of the image inside the panel. Every one is neutral by default, a
-  double-click resets any slider, and converting again starts from the
-  faithful result.
+- An adjust panel behind the pencil icon, previewing live on a copy of the
+  image inside the panel, with the tools photo editors lead with:
+  - **Light**: exposure, contrast, highlights, shadows, white point, black point
+  - **Color**: temperature, tint, vibrance, saturation
+  - **Detail**: clarity, sharpness
+  - **Effects**: vignette
+
+  Every one is neutral by default, and an untouched conversion is
+  byte-for-byte what it was without the panel. A double-click resets any
+  slider, and converting again starts from the faithful result.
 - A before/after view with a draggable wipe, comparing the converted file
   against the way your device already renders the HDR original. The drag is
   pointer-based and works the same with a finger as with a mouse, and it only
@@ -172,21 +177,36 @@ own default for settings like quality. The neutral position is read from the
 control's `value` attribute, so there is no second list to keep in sync.
 
 Both paths share `resolveAdaptation`, `resolvePeak`, `createCurve`,
-`tonemapPixel` and `encodePixel`, and the release reuses the measurement the
-preview exposed from, so nothing can shift under you when you stop dragging.
+`tonemapPixel`, `encodePixel` and the grade itself, and the release reuses
+the measurement the preview exposed from, so nothing can shift under you when
+you stop dragging. The preview takes two shortcuts the file does not: it
+encodes with a tabulated sRGB curve (within about 0.005/255 of the exact one,
+and three powers per pixel had been over half the cost of a frame), and it
+runs sharpening at its own, smaller scale, so sharpness is approximate while
+you drag. Letting go re-encodes the file exactly and shows that.
 
 | Control | Where it acts |
 | --- | --- |
 | Exposure | Linear light, *before* the tone curve — a stop is a stop, and the curve is rebuilt around the new peak. |
+| Temperature / Tint | Linear light, before the tone curve, as per-channel gains: the picture is treated as lit by a blackbody warmer or cooler than D65 and corrected for it (von Kries). ±100 is ±50 mired along the Planckian locus, the scale on which equal steps look equal; tint scales green across it. Normalised so a grey keeps its luminance, and the curve's peak widens with the largest gain so a warmed highlight rolls off instead of clipping. |
 | Contrast | An S-curve about mid grey that fixes both endpoints, so it cannot clip either end. |
 | Highlights / Shadows | One weighted lobe each, peaking at 25% and 75%. |
 | White / black point | The endpoints of the displayed range. |
+| Vibrance | Saturation weighted by how muted a colour is (1 − HSV saturation): a dull sky gains colour long before a vivid sign turns garish. |
 | Saturation | Distance from grey, around the graded luminance. |
+| Vignette | Linear display light, as a smooth falloff that follows the frame (crop included). Darkening multiplies, as a lens does; lightening mixes toward white so it cannot clip. |
+| Clarity | Edge-aware local contrast in the midtones: the detail above a guided-filter base layer (He and Sun's fast guided filter, radius 1.2% of the diagonal), weighted away from black and white. Strong outlines barely move — a hard edge that a plain unsharp mask of the same radius would halo by ~89/255 moves by 4/255. |
+| Sharpness | An unsharp mask on luminance (σ = 1 px, up to 150%) applied last, at the saved resolution — before a downscale it would mostly be averaged away. Differences under 0.5/255 are left alone, so 8-bit steps in a dark gradient are not turned into texture. |
 
-Everything except exposure is display-referred and runs *after* tone mapping,
-on the sRGB-encoded signal, because that is the domain those controls are
+Temperature and tint act on light, so they sit with exposure ahead of the tone
+curve. The tonal and colour controls are display-referred and run *after* tone
+mapping, on the sRGB-encoded signal, because that is the domain they are
 named for: "shadows" and a black point are statements about where tones land
-on the final display, not about scene light.
+on the final display, not about scene light. Clarity and sharpness need their
+neighbours, so they run last, over the finished image.
+
+Clarity and sharpness change brightness locally but add the same amount to
+all three channels, so they do not shift colours or draw coloured fringes.
 
 Two properties are enforced by `src/grade.js` and checked by the tests. The
 curve is **monotonic** over the whole parameter space — all 59,048 slider
@@ -216,10 +236,12 @@ end of the settings row, puts every control back to the recommended baseline.
 | Curve parameter | Standard value | BT.2390's knee offset (0.5), or `tonemap`'s `param` (0.3 for mobius, 1.8 for gamma, …). |
 | Limit longest side | Original | Optional downscale; the aspect ratio is preserved. |
 
-The pencil icon under the result opens the per-image adjustments — exposure,
-contrast, highlights, shadows, white point, black point and saturation. All are
-neutral by default, so they change nothing until you move them, and **Convert**
-returns them to neutral. See [Adjusting it by eye](#adjusting-it-by-eye).
+The pencil icon under the result opens the per-image adjustments: light
+(exposure, contrast, highlights, shadows, white and black point), colour
+(temperature, tint, vibrance, saturation), detail (clarity, sharpness) and a
+vignette. All are neutral by default, so they change nothing until you move
+them, and **Convert** returns them to neutral. See
+[Adjusting it by eye](#adjusting-it-by-eye).
 
 ## Browser support
 
