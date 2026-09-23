@@ -165,7 +165,9 @@ export const translations = {
     NO_HDR_DATA:
       "Your browser cannot hand over the raw HDR samples, so the image was read after the browser converted it. Chrome or Edge give accurate results.",
     UNTAGGED_SOURCE: "This file has no HDR tagging, so it is treated as SDR sRGB. You can override it in the advanced settings.",
-    QUEUE_LABEL: "Loaded images"
+    QUEUE_LABEL: "Loaded images",
+    QUEUE_REMOVE: "Remove {name}",
+    IMAGE_REMOVED: "{name} removed from the list."
   },
   es: {
     PAGE_TITLE: "HDR Converter — Imágenes HDR a SDR",
@@ -334,7 +336,9 @@ export const translations = {
       "Tu navegador no entrega las muestras HDR originales, así que la imagen se leyó ya convertida por el navegador. Chrome o Edge dan resultados precisos.",
     UNTAGGED_SOURCE:
       "Este archivo no tiene etiquetas HDR, así que se trata como SDR sRGB. Puedes forzarlo en los ajustes avanzados.",
-    QUEUE_LABEL: "Imágenes cargadas"
+    QUEUE_LABEL: "Imágenes cargadas",
+    QUEUE_REMOVE: "Quitar {name}",
+    IMAGE_REMOVED: "{name} se ha quitado de la lista."
   }
 };
 

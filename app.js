@@ -281,6 +281,9 @@ function applyLanguage(language) {
   if (tipAnchor) showTip(tipAnchor);
 
   updateThemeControl();
+  // The list's remove buttons are named after their files, so they are
+  // rebuilt rather than re-labelled from a fixed key.
+  renderQueue();
   updateControls();
   updateSourceNote();
   setStatus(state.status.key, state.status.params);
@@ -497,24 +500,48 @@ function createSelection() {
   return { root, handles };
 }
 
+/** A trash can, drawn like the other icons: 24-unit grid, 2-unit strokes. */
+const TRASH_ICON =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V4h6v3"/>' +
+  '<path d="m6 7 1 13h10l1-13"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>';
+
 function renderQueue() {
   elements.queue.replaceChildren();
   elements.queue.hidden = state.items.length < 2;
   if (state.items.length < 2) return;
 
   state.items.forEach((item) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "queue-item";
-    button.setAttribute("aria-current", String(item.id === state.activeId));
+    const entry = document.createElement("div");
+    entry.className = "queue-item";
+    entry.setAttribute("role", "listitem");
+
+    const select = document.createElement("button");
+    select.type = "button";
+    select.className = "queue-select";
+    select.setAttribute("aria-current", String(item.id === state.activeId));
     const thumb = document.createElement("img");
     thumb.src = item.resultUrl || item.previewUrl;
     thumb.alt = "";
     const label = document.createElement("span");
     label.textContent = item.file.name;
-    button.append(thumb, label);
-    button.addEventListener("click", () => setActiveItem(item.id));
-    elements.queue.append(button);
+    select.append(thumb, label);
+    select.addEventListener("click", () => setActiveItem(item.id));
+
+    // A sibling of the select button rather than a child: a button inside a
+    // button is invalid HTML, and browsers then route its clicks and its
+    // accessible name unpredictably.
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "queue-remove";
+    remove.disabled = state.processing;
+    const name = translate("QUEUE_REMOVE", { name: item.file.name });
+    remove.setAttribute("aria-label", name);
+    remove.title = name;
+    remove.innerHTML = TRASH_ICON;
+    remove.addEventListener("click", () => removeItem(item.id));
+
+    entry.append(select, remove);
+    elements.queue.append(entry);
   });
 }
 
@@ -625,6 +652,9 @@ function updateControls() {
   elements.adjust.disabled = !item?.result || busy;
   elements.downloadAll.hidden = converted.length < 2;
   elements.downloadAll.disabled = converted.length < 2 || busy;
+  elements.queue.querySelectorAll(".queue-remove").forEach((button) => {
+    button.disabled = busy;
+  });
 
   elements.crop.textContent = translate(state.cropMode ? "CROP_DISABLE" : "CROP_ENABLE");
   elements.crop.setAttribute("aria-pressed", String(state.cropMode));
@@ -687,6 +717,45 @@ async function loadFiles(fileList) {
     setStatus("IMAGES_LOADED", { count: state.items.length });
   }
   setProgress(0);
+}
+
+/**
+ * Takes one image out of the list.
+ *
+ * Refused while a conversion runs: the conversion walks the list by index,
+ * and removing an entry under it would skip or repeat an image. The buttons
+ * are disabled then too (see updateControls).
+ */
+function removeItem(id) {
+  if (state.processing) return;
+  const index = state.items.findIndex((entry) => entry.id === id);
+  if (index < 0) return;
+  const hadFocus = elements.queue.contains(document.activeElement);
+
+  const [item] = state.items.splice(index, 1);
+  // Its preview, its result and its cached scene go with it; only the object
+  // URLs need releasing by hand.
+  URL.revokeObjectURL(item.previewUrl);
+  if (item.resultUrl) URL.revokeObjectURL(item.resultUrl);
+
+  if (!state.items.length) {
+    clearItems();
+    return;
+  }
+  if (state.activeId === id) {
+    // The image that slid into its place, or the new last one.
+    state.activeId = state.items[Math.min(index, state.items.length - 1)].id;
+  }
+  setActiveItem(state.activeId);
+  setStatus("IMAGE_REMOVED", { name: item.file.name });
+
+  // The focused button no longer exists. Hand focus to the one that took its
+  // place, so a keyboard user can keep going instead of being dropped at the
+  // top of the page; with one image left the list is gone, so Convert.
+  if (hadFocus) {
+    const buttons = elements.queue.querySelectorAll(".queue-remove");
+    (buttons[Math.min(index, buttons.length - 1)] || elements.convert).focus();
+  }
 }
 
 function clearItems() {
