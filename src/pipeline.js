@@ -1,13 +1,16 @@
 /**
  * HDR -> SDR conversion pipeline.
  *
- * Mirrors the filter chain FFmpeg recommends for this job:
+ * Follows the chain FFmpeg recommends for this job:
  *
  *   zscale=t=linear:npl=100, format=gbrpf32le, zscale=p=bt709,
  *   tonemap=tonemap=...:desat=..., zscale=t=bt709:m=bt709:r=tv
  *
- * i.e. linearise the source transfer, convert the gamut to BT.709, tone map in
- * linear light, then re-encode with an SDR transfer function.
+ * i.e. linearise the source transfer to absolute light with 100 cd/m2 as SDR
+ * white, convert the gamut to BT.709, tone map in linear light, then re-encode
+ * with an SDR transfer function. The default curve is the ITU-R BT.2390 EETF
+ * rather than one of FFmpeg's, because it is the one designed to reproduce a
+ * PQ master on a smaller display without changing what already fits.
  *
  * The API is deliberately stateless and file-at-a-time so that bulk editing
  * only needs to loop over items (see `convertAll`).
@@ -25,24 +28,32 @@ import {
 } from "./colorspace.js";
 import { createCurve, tonemapPixel } from "./tonemap.js";
 import { GRADE_DEFAULTS, applyGrade, createGrade } from "./grade.js";
+import { encodePng16, resize16 } from "./png.js";
 
 export const DEFAULT_SETTINGS = Object.freeze({
-  /** Tone curve from libavfilter/vf_tonemap.c. */
-  algorithm: "mobius",
-  /** `null` keeps the FFmpeg default for the selected curve. */
+  /**
+   * Tone curve. "bt2390" is the ITU-R BT.2390 EETF (tonemap.js); the others are
+   * ported from libavfilter/vf_tonemap.c.
+   */
+  algorithm: "bt2390",
+  /** `null` keeps the default parameter for the selected curve. */
   param: null,
-  /** Desaturation strength, FFmpeg default. */
-  desat: 2,
+  /**
+   * Highlight desaturation. FFmpeg defaults to 2, which pulls anything above
+   * 200 cd/m2 toward grey; 0 keeps every colour's chromaticity as measured.
+   */
+  desat: 0,
   /** "auto" measures the peak, "standard" uses the transfer nominal peak. */
   peakMode: "auto",
   peakNits: 1000,
   /**
    * Luminance adaptation before the tone curve:
-   * "auto"      — expose from the scene statistics (see resolveAdaptation),
-   * "standard"  — FFmpeg's absolute mapping, 100 nits is SDR white,
-   * "reference" — BT.2408, HDR reference white (203 nits) is SDR white.
+   * "standard"  — absolute light, 100 cd/m2 is SDR white (FFmpeg's npl=100);
+   *               the faithful mapping, and the default,
+   * "reference" — BT.2408, HDR reference white (203 cd/m2) is SDR white,
+   * "auto"      — re-expose from the scene statistics (see resolveAdaptation).
    */
-  brightness: "auto",
+  brightness: "standard",
   /** Exposure compensation in stops, applied in linear light. */
   exposure: 0,
   /**
@@ -119,6 +130,53 @@ function lutLookup(lut, transfer, value) {
   const index = position | 0;
   const fraction = position - index;
   return lut[index] + (lut[index + 1] - lut[index]) * fraction;
+}
+
+/** PQ and HLG carry HDR; everything else was graded for an SDR display. */
+function isHdrTransfer(transfer) {
+  return transfer === "pq" || transfer === "hlg";
+}
+
+/** The BT.2020 -> BT.709 matrix for a source, or null when none is needed. */
+function gamutFor(primaries) {
+  return rgb2rgbMatrix(primaries in COLOR_PRIMARIES ? primaries : "bt709", "bt709");
+}
+
+/**
+ * Converts one linear pixel to BT.709 primaries, in place.
+ *
+ * Colours outside BT.709 come out of the matrix with a negative component.
+ * Clipping that to zero, channel by channel, shifts both the hue and the
+ * luminance of exactly the most saturated colours. Instead the colour is
+ * mixed with the neutral grey of the same luminance, just far enough to bring
+ * the negative component to zero: that moves its chromaticity straight toward
+ * the white point, which keeps the dominant wavelength (the hue) and the
+ * luminance unchanged and removes only the saturation BT.709 cannot show.
+ */
+function toBt709(gamut, rgb) {
+  if (!gamut) return;
+  const r = rgb[0];
+  const g = rgb[1];
+  const b = rgb[2];
+  let r2 = gamut[0][0] * r + gamut[0][1] * g + gamut[0][2] * b;
+  let g2 = gamut[1][0] * r + gamut[1][1] * g + gamut[1][2] * b;
+  let b2 = gamut[2][0] * r + gamut[2][1] * g + gamut[2][2] * b;
+
+  const low = Math.min(r2, g2, b2);
+  if (low < 0) {
+    const y = 0.2126 * r2 + 0.7152 * g2 + 0.0722 * b2;
+    if (y > 0) {
+      const t = y / (y - low);
+      r2 = y + t * (r2 - y);
+      g2 = y + t * (g2 - y);
+      b2 = y + t * (b2 - y);
+    } else {
+      r2 = g2 = b2 = 0;
+    }
+  }
+  rgb[0] = r2 < 0 ? 0 : r2;
+  rgb[1] = g2 < 0 ? 0 : g2;
+  rgb[2] = b2 < 0 ? 0 : b2;
 }
 
 export function normalizeCrop(source, crop) {
@@ -216,19 +274,26 @@ function createSampler(source, matrixName) {
  * browsers cannot answer because they expose no mastering metadata. The
  * luminance histogram on top of it feeds the adaptation stage below.
  */
-function measureScene(source, crop, transfer, matrixName, lut, coeffs) {
+function measureScene(source, crop, transfer, matrixName, lut, coeffs, gamut) {
   const sample = createSampler(source, matrixName);
   const pixel = new Float32Array(4);
+  const mapped = new Float32Array(3);
   const step = Math.max(1, Math.round(Math.min(crop.width, crop.height) / 720));
   const isHlg = transfer === "hlg";
   const counts = new Uint32Array(HISTOGRAM_BINS);
   const span = HISTOGRAM_MAX_LOG2 - HISTOGRAM_MIN_LOG2;
   let peak = 0;
+  let signalPeak = 0;
   let logSum = 0;
   let lit = 0;
 
-  for (let y = 0; y < crop.height; y += step) {
-    for (let x = 0; x < crop.width; x += step) {
+  // Every pixel is visited for the peaks, because the tone curve is built
+  // around the brightest one: a peak taken from the sample grid can miss it,
+  // and whatever lies above the curve's peak is clipped. The histogram only
+  // needs the grid.
+  for (let y = 0; y < crop.height; y++) {
+    const onGridRow = y % step === 0;
+    for (let x = 0; x < crop.width; x++) {
       sample(crop.x + x, crop.y + y, pixel);
       let r = lutLookup(lut, transfer, pixel[0]);
       let g = lutLookup(lut, transfer, pixel[1]);
@@ -239,9 +304,21 @@ function measureScene(source, crop, transfer, matrixName, lut, coeffs) {
         g *= factor;
         b *= factor;
       }
+      // The source's own brightest component, as CTA-861.3 defines MaxCLL.
       const value = Math.max(r, g, b);
       if (value > peak) peak = value;
 
+      // And the brightest component the tone curve will actually see, after
+      // the conversion to BT.709 — saturated colours can come out of the
+      // matrix brighter than they went in.
+      mapped[0] = r;
+      mapped[1] = g;
+      mapped[2] = b;
+      toBt709(gamut, mapped);
+      const signal = Math.max(mapped[0], mapped[1], mapped[2]);
+      if (signal > signalPeak) signalPeak = signal;
+
+      if (!onGridRow || x % step !== 0) continue;
       const luma = Math.max(0, coeffs.cr * r + coeffs.cg * g + coeffs.cb * b);
       // Black pixels are excluded so that letterbox bars cannot move the
       // exposure: cropping them away has to leave the result unchanged.
@@ -269,6 +346,8 @@ function measureScene(source, crop, transfer, matrixName, lut, coeffs) {
 
   return {
     peak,
+    /** The brightest BT.709 component, which is what the tone curve maps. */
+    signalPeak,
     lit,
     logAverage: lit ? Math.pow(2, logSum / lit) : 0,
     /** Estimated diffuse white, in REFERENCE_WHITE units. */
@@ -288,7 +367,7 @@ export function resolvePeak(settings, scene, transfer) {
             : REFERENCE_WHITE;
     return Math.max(1, nits / REFERENCE_WHITE);
   }
-  return Math.max(1, scene.peak);
+  return Math.max(1, scene.signalPeak ?? scene.peak);
 }
 
 /**
@@ -318,7 +397,7 @@ export function resolveAdaptation(settings, scene, transfer) {
   if (settings.brightness === "standard") return 1;
   // An SDR source is already graded for an SDR screen: there is nothing to
   // adapt, and re-exposing it would only fight the grade it arrived with.
-  if (transfer !== "pq" && transfer !== "hlg") return 1;
+  if (!isHdrTransfer(transfer)) return 1;
   if (settings.brightness === "reference") return REFERENCE_WHITE / HDR_REFERENCE_WHITE;
 
   const diffuse = scene.diffuse;
@@ -339,16 +418,27 @@ const ENCODED = new Float32Array(3);
  *
  * Shared by `renderPreview` and `convert` so the live canvas and the file that
  * gets downloaded cannot disagree about the last step of the pipeline.
+ *
+ * `out16`, when given, receives the same pixel at 16 bits per channel for the
+ * PNG encoder; both are rounded from the same float, so they never disagree
+ * by more than the 8-bit rounding itself.
  */
-function encodePixel(out, index, rgb, alpha, grade) {
+function encodePixel(out, index, rgb, alpha, grade, out16) {
   ENCODED[0] = delinearizeValue("iec61966-2-1", Math.min(rgb[0], 1));
   ENCODED[1] = delinearizeValue("iec61966-2-1", Math.min(rgb[1], 1));
   ENCODED[2] = delinearizeValue("iec61966-2-1", Math.min(rgb[2], 1));
   if (grade) applyGrade(grade, ENCODED);
+  const a = Math.min(Math.max(alpha, 0), 1);
   out[index] = Math.round(ENCODED[0] * 255);
   out[index + 1] = Math.round(ENCODED[1] * 255);
   out[index + 2] = Math.round(ENCODED[2] * 255);
-  out[index + 3] = Math.round(Math.min(Math.max(alpha, 0), 1) * 255);
+  out[index + 3] = Math.round(a * 255);
+  if (out16) {
+    out16[index] = Math.round(Math.min(Math.max(ENCODED[0], 0), 1) * 65535);
+    out16[index + 1] = Math.round(Math.min(Math.max(ENCODED[1], 0), 1) * 65535);
+    out16[index + 2] = Math.round(Math.min(Math.max(ENCODED[2], 0), 1) * 65535);
+    out16[index + 3] = Math.round(a * 65535);
+  }
 }
 
 /**
@@ -376,7 +466,7 @@ export function prepareScene(source, settings, crop, { maxPixels = 2.2e6 } = {})
   const coeffs = LUMA_COEFFICIENTS[matrix]
     || LUMA_COEFFICIENTS[primaries === "bt2020" ? "bt2020-ncl" : "bt709"];
   const lut = buildLut(transfer);
-  const scene = measureScene(source, area, transfer, matrixName, lut, coeffs);
+  const scene = measureScene(source, area, transfer, matrixName, lut, coeffs, gamutFor(primaries));
 
   const step = Math.max(1, Math.ceil(Math.sqrt((area.width * area.height) / maxPixels)));
   const width = Math.max(1, Math.floor(area.width / step));
@@ -433,8 +523,8 @@ export function renderPreview(prepared, settings) {
   const { width, height, linear, alpha, scene, transfer, primaries, coeffs } = prepared;
   const gain = resolveAdaptation(options, scene, transfer) * Math.pow(2, options.exposure || 0);
   const peak = Math.max(1, resolvePeak(options, scene, transfer) * gain);
-  const curve = createCurve(options.algorithm, options.param, peak);
-  const gamut = rgb2rgbMatrix(primaries in COLOR_PRIMARIES ? primaries : "bt709", "bt709");
+  const curve = createCurve(options.algorithm, options.param, peak, { hdr: isHdrTransfer(transfer) });
+  const gamut = gamutFor(primaries);
   const isHlg = transfer === "hlg";
   const grade = createGrade(options);
 
@@ -454,27 +544,10 @@ export function renderPreview(prepared, settings) {
       b *= factor;
     }
 
-    if (gain !== 1) {
-      r *= gain;
-      g *= gain;
-      b *= gain;
-    }
-
-    if (gamut) {
-      const lr = r;
-      const lg = g;
-      const lb = b;
-      r = gamut[0][0] * lr + gamut[0][1] * lg + gamut[0][2] * lb;
-      g = gamut[1][0] * lr + gamut[1][1] * lg + gamut[1][2] * lb;
-      b = gamut[2][0] * lr + gamut[2][1] * lg + gamut[2][2] * lb;
-      if (r < 0) r = 0;
-      if (g < 0) g = 0;
-      if (b < 0) b = 0;
-    }
-
-    rgb[0] = r;
-    rgb[1] = g;
-    rgb[2] = b;
+    rgb[0] = r * gain;
+    rgb[1] = g * gain;
+    rgb[2] = b * gain;
+    toBt709(gamut, rgb);
     tonemapPixel(rgb, curve, options.desat, coeffs);
 
     encodePixel(out, index, rgb, alpha[i], grade);
@@ -484,9 +557,10 @@ export function renderPreview(prepared, settings) {
 }
 
 /**
- * Converts one decoded source into 8-bit sRGB pixels.
+ * Converts one decoded source into sRGB pixels: 8-bit always, and 16-bit as
+ * well when the output format can carry it (PNG).
  *
- * @returns {Promise<{imageData: ImageData, peak: number, transfer: string, primaries: string}>}
+ * @returns {Promise<{imageData: ImageData, pixels16: Uint16Array|null, peak: number, transfer: string, primaries: string}>}
  */
 export async function convert(source, settings, crop, { onProgress, signal, scene: measured } = {}) {
   const options = { ...DEFAULT_SETTINGS, ...settings };
@@ -498,20 +572,21 @@ export async function convert(source, settings, crop, { onProgress, signal, scen
   const coeffs = LUMA_COEFFICIENTS[matrix]
     || LUMA_COEFFICIENTS[primaries === "bt2020" ? "bt2020-ncl" : "bt709"];
   const lut = buildLut(transfer);
+  const gamut = gamutFor(primaries);
 
-  const scene = measured || measureScene(source, area, transfer, matrixName, lut, coeffs);
+  const scene = measured || measureScene(source, area, transfer, matrixName, lut, coeffs, gamut);
   // Adaptation happens in linear light before the curve, so the peak the curve
   // is built around has to move with it.
   const gain = resolveAdaptation(options, scene, transfer) * Math.pow(2, options.exposure || 0);
   const peak = Math.max(1, resolvePeak(options, scene, transfer) * gain);
-  const curve = createCurve(options.algorithm, options.param, peak);
-  const gamut = rgb2rgbMatrix(primaries in COLOR_PRIMARIES ? primaries : "bt709", "bt709");
+  const curve = createCurve(options.algorithm, options.param, peak, { hdr: isHdrTransfer(transfer) });
   const isHlg = transfer === "hlg";
   const grade = createGrade(options);
 
   const sample = createSampler(source, matrixName);
   const output = new ImageData(area.width, area.height);
   const out = output.data;
+  const out16 = options.outputFormat === "image/png" ? new Uint16Array(area.width * area.height * 4) : null;
   const pixel = new Float32Array(4);
   const rgb = new Float32Array(3);
 
@@ -538,34 +613,20 @@ export async function convert(source, settings, crop, { onProgress, signal, scen
         }
 
         // 3. optional exposure compensation, still in linear light
-        if (gain !== 1) {
-          r *= gain;
-          g *= gain;
-          b *= gain;
-        }
+        rgb[0] = r * gain;
+        rgb[1] = g * gain;
+        rgb[2] = b * gain;
 
-        // 4. gamut conversion (zscale=p=bt709)
-        if (gamut) {
-          const lr = r;
-          const lg = g;
-          const lb = b;
-          r = gamut[0][0] * lr + gamut[0][1] * lg + gamut[0][2] * lb;
-          g = gamut[1][0] * lr + gamut[1][1] * lg + gamut[1][2] * lb;
-          b = gamut[2][0] * lr + gamut[2][1] * lg + gamut[2][2] * lb;
-          if (r < 0) r = 0;
-          if (g < 0) g = 0;
-          if (b < 0) b = 0;
-        }
+        // 4. gamut conversion (zscale=p=bt709), mapping rather than clipping
+        //    what BT.709 cannot show
+        toBt709(gamut, rgb);
 
-        // 5. tone map (libavfilter/vf_tonemap.c)
-        rgb[0] = r;
-        rgb[1] = g;
-        rgb[2] = b;
+        // 5. tone map (tonemap.js)
         tonemapPixel(rgb, curve, options.desat, coeffs);
 
         // 6. encode with the SDR transfer function, then the display-referred
         //    tonal controls, if the user has touched any (src/grade.js)
-        encodePixel(out, index, rgb, pixel[3], grade);
+        encodePixel(out, index, rgb, pixel[3], grade, out16);
         index += 4;
       }
     }
@@ -576,8 +637,10 @@ export async function convert(source, settings, crop, { onProgress, signal, scen
 
   return {
     imageData: output,
+    pixels16: out16,
     // The measured content peak, in REFERENCE_WHITE units, for reporting.
-    peak: Math.max(1, scene.peak),
+    // Unclamped: content that never reaches SDR white should say so.
+    peak: scene.peak,
     // What the curve was actually built around, after adaptation.
     curvePeak: peak,
     gain,
@@ -630,6 +693,28 @@ export function canvasToBlob(canvas, format, quality) {
       format === "image/png" ? undefined : quality
     );
   });
+}
+
+/**
+ * Encodes a conversion into the downloadable file, and the canvas the app
+ * previews it with.
+ *
+ * JPEG and WebP go through the browser's encoder, which is 8-bit only; its
+ * JPEG carries an embedded sRGB profile. PNG is written here instead, at
+ * 16 bits per channel from the pipeline's own output, so the file keeps the
+ * precision the tone curve produced rather than the canvas's 8 bits — which
+ * matters most in exactly the dark gradients HDR scenes are full of.
+ */
+export async function encodeResult({ imageData, pixels16 }, settings) {
+  const canvas = toCanvas(imageData, settings.maxDimension);
+  if (settings.outputFormat === "image/png" && pixels16) {
+    const resized =
+      canvas.width === imageData.width && canvas.height === imageData.height
+        ? pixels16
+        : resize16(pixels16, imageData.width, imageData.height, canvas.width, canvas.height);
+    return { canvas, blob: encodePng16(resized, canvas.width, canvas.height) };
+  }
+  return { canvas, blob: await canvasToBlob(canvas, settings.outputFormat, settings.quality) };
 }
 
 /**

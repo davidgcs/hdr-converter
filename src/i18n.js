@@ -36,11 +36,12 @@ export const translations = {
     TONEMAP_CLIP: "Clip",
     TONEMAP_REINHARD: "Reinhard",
     TONEMAP_HABLE: "Hable (filmic)",
-    TONEMAP_MOBIUS: "Mobius (recommended)",
+    TONEMAP_BT2390: "BT.2390 (ITU, recommended)",
+    TONEMAP_MOBIUS: "Mobius (FFmpeg)",
     BRIGHTNESS_LABEL: "Brightness",
-    BRIGHTNESS_AUTO: "Auto exposure (recommended)",
+    BRIGHTNESS_AUTO: "Auto exposure (brightens dark scenes)",
     BRIGHTNESS_REFERENCE: "HDR reference white (203 nits)",
-    BRIGHTNESS_STANDARD: "Absolute (FFmpeg, 100 nits)",
+    BRIGHTNESS_STANDARD: "Faithful, 100 nits = SDR white (recommended)",
     PEAK_LABEL: "Source peak brightness",
     PEAK_AUTO: "Auto (measured)",
     PEAK_STANDARD: "Format standard",
@@ -93,16 +94,16 @@ export const translations = {
     COMPARE_NOTE:
       "The left side is how this device already renders the HDR file — the same thing another screen or a messaging app would show.",
     TIP_TONEMAP:
-      "How light above SDR white is squeezed back into range. Mobius keeps normal tones untouched and only bends the highlights, so photos stay natural. Hable is more filmic but darker. Clip simply cuts anything too bright.",
+      "How light brighter than the SDR screen can show is fitted into range. BT.2390, the ITU standard, reproduces every tone that fits exactly as it was, rolls off only what is brighter, and keeps shadow detail above the screen's black. Mobius is FFmpeg's default, Hable is filmic but darker, and Clip simply cuts anything too bright.",
     TIP_BRIGHTNESS:
-      "How HDR brightness becomes SDR brightness. Auto exposure reads the scene and sets the level the way a camera would, which is what keeps dark shots from staying dark. The other two reproduce fixed reference levels instead.",
+      "How HDR brightness becomes SDR brightness. Faithful shows each tone at the same light level it had in the HDR file, with 100 nits as SDR white, so a dark scene stays as dark as it was made. Reference white follows BT.2408 and is half as bright. Auto exposure re-exposes every scene to the same level, which lifts dark scenes and changes their look.",
     TIP_PEAK:
       "The brightest level assumed to exist in the source. It sets how much headroom the curve has to compress, so a higher value protects highlights but flattens contrast.",
     TIP_PEAK_NITS: "The peak brightness to assume, in nits.",
     TIP_DESAT:
-      "Pulls very bright pixels towards grey so intense highlights do not turn into flat patches of colour. Raise it if bright skies or lamps look tinted, lower it to keep highlights saturated.",
+      "Pulls very bright pixels towards grey. 0 keeps every colour exactly as measured, which is the faithful result; FFmpeg uses 2. Raise it only if bright lamps or skies look oddly tinted.",
     TIP_FORMAT:
-      "The file you download. JPEG is smallest and best for sharing, PNG is lossless and keeps transparency, WebP sits in between.",
+      "The file you download. JPEG is 8-bit sRGB with an embedded sRGB profile, the best choice for WhatsApp, Instagram and the web. PNG is 16-bit sRGB and uncompressed, for archiving the full precision; it is large. WebP sits in between.",
     TIP_QUALITY:
       "JPEG and WebP compression. Higher keeps more detail and makes a bigger file; below about 80 you may see blocking in smooth gradients.",
     TIP_ASPECT:
@@ -110,7 +111,7 @@ export const translations = {
     TIP_INPUT:
       "Overrides how the source is interpreted. Use it only when a file is tagged wrongly and the result looks washed out or far too dark.",
     TIP_PARAM:
-      "Fine-tunes the selected curve. Leave it empty to use the FFmpeg default, which suits almost every image.",
+      "Fine-tunes the selected curve. Leave it empty for the standard value: the BT.2390 knee offset of 0.5, or the FFmpeg default for the other curves.",
     TIP_EXPOSURE:
       "Brightens or darkens the whole image before tone mapping, in camera stops. +1 doubles the light, -1 halves it. It stacks on top of the Brightness setting.",
     TIP_CONTRAST:
@@ -181,11 +182,12 @@ export const translations = {
     TONEMAP_CLIP: "Recorte",
     TONEMAP_REINHARD: "Reinhard",
     TONEMAP_HABLE: "Hable (fílmico)",
-    TONEMAP_MOBIUS: "Mobius (recomendado)",
+    TONEMAP_BT2390: "BT.2390 (ITU, recomendado)",
+    TONEMAP_MOBIUS: "Mobius (FFmpeg)",
     BRIGHTNESS_LABEL: "Brillo",
-    BRIGHTNESS_AUTO: "Exposición automática (recomendado)",
+    BRIGHTNESS_AUTO: "Exposición automática (aclara escenas oscuras)",
     BRIGHTNESS_REFERENCE: "Blanco de referencia HDR (203 nits)",
-    BRIGHTNESS_STANDARD: "Absoluto (FFmpeg, 100 nits)",
+    BRIGHTNESS_STANDARD: "Fiel, 100 nits = blanco SDR (recomendado)",
     PEAK_LABEL: "Brillo máximo del origen",
     PEAK_AUTO: "Automático (medido)",
     PEAK_STANDARD: "Estándar del formato",
@@ -238,16 +240,16 @@ export const translations = {
     COMPARE_NOTE:
       "La parte izquierda es como este dispositivo ya muestra el archivo HDR, lo mismo que vería otra pantalla o una aplicación de mensajería.",
     TIP_TONEMAP:
-      "Cómo se comprime la luz que supera el blanco SDR. Mobius deja intactos los tonos normales y solo dobla las altas luces, así que las fotos se mantienen naturales. Hable es más cinematográfico pero más oscuro. Clip simplemente recorta lo que sobra.",
+      "Cómo se encaja la luz que la pantalla SDR no puede mostrar. BT.2390, el estándar de la ITU, reproduce tal cual cada tono que cabe, comprime solo lo que es más brillante y conserva el detalle de las sombras por encima del negro de la pantalla. Mobius es el de FFmpeg, Hable es cinematográfico pero más oscuro y Clip simplemente recorta lo que sobra.",
     TIP_BRIGHTNESS:
-      "Cómo se traduce el brillo HDR al brillo SDR. La exposición automática mide la escena y fija el nivel como haría una cámara, que es lo que evita que las tomas oscuras sigan oscuras. Las otras dos reproducen niveles de referencia fijos.",
+      "Cómo se traduce el brillo HDR al brillo SDR. Fiel muestra cada tono con la misma luz que tenía en el archivo HDR, con 100 nits como blanco SDR, así que una escena oscura sigue tan oscura como se creó. El blanco de referencia sigue BT.2408 y queda la mitad de brillante. La exposición automática reexpone todas las escenas al mismo nivel, lo que aclara las oscuras y cambia su aspecto.",
     TIP_PEAK:
       "El nivel más brillante que se supone que existe en el origen. Define cuánto margen tiene la curva para comprimir: un valor alto protege las altas luces pero resta contraste.",
     TIP_PEAK_NITS: "Brillo máximo que se va a suponer, en nits.",
     TIP_DESAT:
-      "Acerca los píxeles muy brillantes al gris para que las altas luces intensas no se conviertan en manchas planas de color. Súbelo si los cielos o las lámparas se ven teñidos; bájalo para conservar la saturación.",
+      "Acerca al gris los píxeles muy brillantes. En 0 cada color se conserva tal y como se ha medido, que es el resultado fiel; FFmpeg usa 2. Súbelo solo si las lámparas o los cielos brillantes se ven teñidos.",
     TIP_FORMAT:
-      "El archivo que vas a descargar. JPEG es el más ligero y el mejor para compartir, PNG no pierde calidad y conserva la transparencia, WebP queda entre los dos.",
+      "El archivo que vas a descargar. JPEG es sRGB de 8 bits con el perfil sRGB incrustado, lo mejor para WhatsApp, Instagram y la web. PNG es sRGB de 16 bits sin compresión, para archivar toda la precisión; ocupa mucho. WebP queda entre los dos.",
     TIP_QUALITY:
       "Compresión de JPEG y WebP. Más alto conserva más detalle y genera un archivo mayor; por debajo de 80 pueden verse bloques en los degradados.",
     TIP_ASPECT:
@@ -255,7 +257,7 @@ export const translations = {
     TIP_INPUT:
       "Cambia cómo se interpreta el origen. Úsalo solo cuando un archivo está mal etiquetado y el resultado sale lavado o demasiado oscuro.",
     TIP_PARAM:
-      "Ajusta la curva seleccionada. Déjalo vacío para usar el valor por defecto de FFmpeg, que sirve para casi cualquier imagen.",
+      "Ajusta la curva seleccionada. Déjalo vacío para usar el valor estándar: el desplazamiento de rodilla 0,5 de BT.2390, o el valor por defecto de FFmpeg en las demás curvas.",
     TIP_EXPOSURE:
       "Aclara u oscurece toda la imagen antes del mapeo de tonos, en pasos de cámara. +1 duplica la luz y -1 la reduce a la mitad. Se suma al ajuste de Brillo.",
     TIP_CONTRAST:
