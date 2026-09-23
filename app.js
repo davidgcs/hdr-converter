@@ -6,7 +6,8 @@ import {
   encodeResult,
   normalizeCrop,
   prepareScene,
-  renderPreview
+  renderPreview,
+  toCanvas
 } from "./src/pipeline.js";
 import { REFERENCE_WHITE } from "./src/colorspace.js";
 import { GRADE_DEFAULTS, GRADE_KEYS } from "./src/grade.js";
@@ -49,6 +50,8 @@ const elements = {
   adjustClose: document.querySelector("#adjust-close"),
   adjustReset: document.querySelector("#adjust-reset"),
   adjustCanvas: document.querySelector("#adjust-canvas"),
+  adjustPreview: document.querySelector("#adjust-preview"),
+  adjustPeekTag: document.querySelector("#adjust-peek-tag"),
   compare: document.querySelector("#compare"),
   compareDialog: document.querySelector("#compare-dialog"),
   compareClose: document.querySelector("#compare-close"),
@@ -788,20 +791,30 @@ function ensurePrepared(item, settings) {
   return item.prepared.data;
 }
 
+/**
+ * The scene measurement the live preview exposed from, when it still applies,
+ * so a full conversion resolves exactly the brightness the preview showed.
+ */
+function measuredScene(item, settings) {
+  return item.prepared?.key === `${JSON.stringify(item.crop)}|${settings.inputOverride}`
+    ? item.prepared.data.scene
+    : undefined;
+}
+
 async function convertItem(item, settings, onProgress) {
   const converted = await convert(item.source, settings, item.crop, {
     onProgress,
     // Reuse the measurement the preview exposed from, so releasing the slider
     // can never shift the brightness the user just dialled in.
-    scene: item.prepared?.key === `${JSON.stringify(item.crop)}|${settings.inputOverride}`
-      ? item.prepared.data.scene
-      : undefined
+    scene: measuredScene(item, settings)
   });
 
   const { canvas, blob } = await encodeResult(converted, settings);
   if (item.resultUrl) URL.revokeObjectURL(item.resultUrl);
 
-  item.result = { canvas, blob, peak: converted.peak };
+  // The settings are kept so the editor can show this same conversion
+  // without its edits (see peekUnedited).
+  item.result = { canvas, blob, peak: converted.peak, settings: { ...settings } };
   item.resultUrl = URL.createObjectURL(blob);
 }
 
@@ -851,21 +864,23 @@ async function convertAllItems() {
 let scrubFrame = 0;
 
 /**
- * Redraws the preview from the cached scene, without re-encoding a file.
- *
- * Only the cheap tail of the pipeline re-runs — everything up to the transfer
- * function is cached by `prepareScene` — so dragging any of the adjust sliders
- * stays interactive even on a full-resolution image.
- */
-/**
  * Mirrors a preview frame into the dialog, so the sliders can be judged
  * against the picture rather than by their numbers.
  *
  * `source` is whatever already holds the current pixels — the ImageData a
  * scrub just produced, or the result canvas when the dialog opens — so the
  * dialog never runs the pipeline itself and cannot disagree with the pane.
+ *
+ * While the unedited picture is being shown (see peekUnedited) the frame is
+ * only remembered, and painted once the peek ends.
  */
 function paintAdjustPreview(source) {
+  if (!source) return;
+  peek.edited = source;
+  if (!peek.showing) paintAdjustCanvas(source);
+}
+
+function paintAdjustCanvas(source) {
   const canvas = elements.adjustCanvas;
   if (!source) return;
 
@@ -882,8 +897,18 @@ function paintAdjustPreview(source) {
   else context.drawImage(source, 0, 0);
 }
 
+/**
+ * Redraws the preview from the cached scene, without re-encoding a file.
+ *
+ * Only the cheap tail of the pipeline re-runs — everything up to the transfer
+ * function is cached by `prepareScene` — so dragging any of the adjust sliders
+ * stays interactive even on a full-resolution image.
+ */
 function scrubAdjust() {
   updateSettingVisibility();
+  // Moving a slider means looking at the edit, so a peek at the unedited
+  // picture ends here.
+  endPeek();
 
   const item = activeItem();
   if (!item?.result || state.processing) return;
@@ -903,7 +928,6 @@ function scrubAdjust() {
   });
 }
 
-/** Re-encodes the active item so the preview is a real file again. */
 /**
  * Re-encodes the active item so the preview is a real file again.
  *
@@ -927,6 +951,9 @@ async function commitAdjust() {
 
   const settings = readSettings();
   persistSettings();
+  // A background render of the unedited picture would halve the speed of the
+  // encode the user is waiting for; it restarts once this one lands.
+  cancelUneditedRender();
   setBusy(true);
   setStatus("CONVERTING");
   try {
@@ -951,8 +978,151 @@ async function commitAdjust() {
     if (commitQueued) {
       commitQueued = false;
       await commitAdjust();
+    } else if (elements.adjustDialog.open) {
+      renderUnedited(item);
     }
   }
+}
+
+/* ------------------------------------------------ before/after in the editor */
+
+/** A press shorter than this is a click; longer is a hold. */
+const HOLD_MS = 300;
+/** How long a click shows the unedited picture for. */
+const PEEK_MS = 3000;
+
+const peek = {
+  /** The unedited picture is on the canvas. */
+  showing: false,
+  /** Pending end of a click's peek. */
+  timer: 0,
+  /** When the current press began, or 0 when nothing is pressed. */
+  pressAt: 0,
+  pointerId: null,
+  /** The press began while a click's peek was running, so it ends it. */
+  toggles: false,
+  /** The latest edited frame, painted back when a peek ends. */
+  edited: null,
+  /** The background render of the unedited picture. */
+  job: null
+};
+
+/**
+ * The settings the item's result was converted with, minus every edit: its
+ * exact conversion — tone curve, brightness, crop, size limit — as it looked
+ * before the adjust panel was touched.
+ */
+function uneditedSettings(item) {
+  const settings = { ...(item.result?.settings || readSettings()), exposure: 0, outputFormat: "image/jpeg" };
+  for (const key of GRADE_KEYS) settings[key] = GRADE_DEFAULTS[key];
+  return settings;
+}
+
+/** Identifies an unedited render: the crop and everything that shapes the pixels. */
+function uneditedKey(item, settings) {
+  const { outputFormat, quality, ...pixels } = settings;
+  return JSON.stringify([item.crop, pixels]);
+}
+
+/**
+ * Renders the unedited picture at full size in the background, once per
+ * conversion, and keeps it on the item.
+ *
+ * Full size matters: the result on screen is full size, and a reduced "before"
+ * would look softer next to it, so the comparison would credit a Sharpness or
+ * Clarity edit with detail that is really just resolution. The render yields
+ * as it goes, so the dialog stays responsive, and is set aside while a commit
+ * runs.
+ */
+function renderUnedited(item) {
+  if (!item?.result || state.processing) return;
+  const settings = uneditedSettings(item);
+  const key = uneditedKey(item, settings);
+  if (item.unedited?.key === key || peek.job?.key === key) return;
+  cancelUneditedRender();
+
+  const job = { key, item, controller: new AbortController() };
+  peek.job = job;
+  convert(item.source, settings, item.crop, { signal: job.controller.signal, scene: measuredScene(item, settings) })
+    .then(({ imageData }) => {
+      if (peek.job !== job) return;
+      item.unedited = { key, frame: toCanvas(imageData, settings.maxDimension) };
+      // Swap the sharp version in if a peek is already showing the stand-in.
+      if (peek.showing && activeItem() === item) paintAdjustCanvas(item.unedited.frame);
+    })
+    .catch((error) => {
+      if (error?.name !== "AbortError") console.warn("Unedited render failed", error);
+    })
+    .finally(() => {
+      if (peek.job === job) peek.job = null;
+    });
+}
+
+function cancelUneditedRender() {
+  peek.job?.controller.abort();
+  peek.job = null;
+}
+
+/**
+ * The unedited picture to show now: the full-size render when it is ready,
+ * otherwise a stand-in rendered from the preview buffer (tens of milliseconds)
+ * while the full-size one is started.
+ */
+function uneditedFrame(item) {
+  const settings = uneditedSettings(item);
+  const key = uneditedKey(item, settings);
+  if (item.unedited?.key === key) return item.unedited.frame;
+  if (item.uneditedPreview?.key !== key) {
+    item.uneditedPreview = { key, frame: renderPreview(ensurePrepared(item, settings), settings) };
+  }
+  renderUnedited(item);
+  return item.uneditedPreview.frame;
+}
+
+function showPeek() {
+  const item = activeItem();
+  if (!item?.result || peek.showing) return;
+  peek.showing = true;
+  paintAdjustCanvas(uneditedFrame(item));
+  elements.adjustPeekTag.hidden = false;
+  elements.adjustPreview.setAttribute("aria-pressed", "true");
+}
+
+/** Ends any peek and puts the edited picture back. */
+function endPeek() {
+  clearTimeout(peek.timer);
+  peek.timer = 0;
+  peek.pressAt = 0;
+  if (!peek.showing) return;
+  peek.showing = false;
+  paintAdjustCanvas(peek.edited);
+  elements.adjustPeekTag.hidden = true;
+  elements.adjustPreview.setAttribute("aria-pressed", "false");
+}
+
+/**
+ * Pressing the editor's picture shows it without the edits.
+ *
+ * A click shows it for PEEK_MS and then returns; holding keeps it until the
+ * press is released. Clicking again while a click's peek is showing returns
+ * straight away, so it can also be flicked back and forth. Both are the same
+ * press seen from its two ends: it always shows on the way down, and the way
+ * up decides whether it stays for a while or goes.
+ */
+function pressPeek() {
+  peek.toggles = peek.showing && peek.timer !== 0;
+  clearTimeout(peek.timer);
+  peek.timer = 0;
+  peek.pressAt = performance.now();
+  showPeek();
+}
+
+function releasePeek() {
+  if (!peek.pressAt) return;
+  const held = performance.now() - peek.pressAt;
+  peek.pressAt = 0;
+  if (held >= HOLD_MS || peek.toggles) endPeek();
+  else if (peek.showing) peek.timer = setTimeout(endPeek, PEEK_MS);
 }
 
 /* ------------------------------------------------------------ modal dialogs */
@@ -1314,8 +1484,56 @@ elements.adjust.addEventListener("click", () => {
   // Seed from the current result so the dialog is never blank before the
   // first drag; afterwards every scrub keeps it in step.
   paintAdjustPreview(activeItem()?.result?.canvas);
+  // Have the unedited picture ready for the first press, once the dialog has
+  // had a moment to appear.
+  setTimeout(() => {
+    if (elements.adjustDialog.open) renderUnedited(activeItem());
+  }, 400);
 });
 elements.adjustClose.addEventListener("click", () => elements.adjustDialog.close());
+elements.adjustDialog.addEventListener("close", () => {
+  peek.pointerId = null;
+  endPeek();
+  cancelUneditedRender();
+});
+
+elements.adjustPreview.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0 || peek.pointerId !== null) return;
+  event.preventDefault();
+  peek.pointerId = event.pointerId;
+  // Capture, so releasing off the picture still ends the hold.
+  try {
+    elements.adjustPreview.setPointerCapture(event.pointerId);
+  } catch {
+    /* not capturable; pointerup still arrives while over the picture */
+  }
+  pressPeek();
+});
+elements.adjustPreview.addEventListener("pointerup", (event) => {
+  if (event.pointerId !== peek.pointerId) return;
+  peek.pointerId = null;
+  releasePeek();
+});
+elements.adjustPreview.addEventListener("pointercancel", (event) => {
+  if (event.pointerId !== peek.pointerId) return;
+  peek.pointerId = null;
+  endPeek();
+});
+// A long press would otherwise open the browser's image menu on touch screens.
+elements.adjustPreview.addEventListener("contextmenu", (event) => event.preventDefault());
+elements.adjustPreview.addEventListener("keydown", (event) => {
+  if (event.key !== " " && event.key !== "Enter") return;
+  event.preventDefault();
+  if (!event.repeat) pressPeek();
+});
+elements.adjustPreview.addEventListener("keyup", (event) => {
+  if (event.key !== " " && event.key !== "Enter") return;
+  event.preventDefault();
+  releasePeek();
+});
+elements.adjustPreview.addEventListener("blur", () => {
+  if (peek.pressAt) endPeek();
+});
 elements.adjustReset.addEventListener("click", () => {
   resetAdjust();
   scrubAdjust();

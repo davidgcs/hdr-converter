@@ -364,8 +364,17 @@
         </button>
       </div>
 
-      <div class="adjust-preview">
+      <div
+        class="adjust-preview"
+        id="adjust-preview"
+        role="button"
+        tabindex="0"
+        aria-pressed="false"
+        aria-label="Show the picture without your edits: click for a moment, or hold"
+        data-i18n-aria-label="ADJUST_PEEK"
+      >
         <canvas id="adjust-canvas"></canvas>
+        <span class="adjust-peek-tag" id="adjust-peek-tag" hidden data-i18n="ADJUST_PEEK_TAG">Without edits</span>
       </div>
 
       <div class="adjust-body">
@@ -443,7 +452,7 @@
 
       <div class="adjust-foot">
         <p class="adjust-note" data-i18n="ADJUST_NOTE">
-          Changes preview live and apply to the downloaded file. Double-click a slider to reset it.
+          Changes preview live and apply to the downloaded file. Click the picture to see it without edits, or hold it. Double-click a slider to reset it.
         </p>
         <button id="adjust-reset" class="button secondary" type="button" data-i18n="ADJUST_RESET">
           Reset adjustments
