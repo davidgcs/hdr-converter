@@ -212,12 +212,6 @@
                 <input id="param" type="number" step="0.05" min="0" placeholder="auto">
               </label>
 
-              <label class="setting setting--range">
-                <span class="field-label" data-i18n="EXPOSURE_LABEL">Exposure (stops)</span>
-                <input id="exposure" type="range" min="-3" max="3" step="0.25" value="0">
-                <output id="exposure-value" for="exposure">0</output>
-              </label>
-
               <label class="setting">
                 <span class="field-label" data-i18n="MAXDIM_LABEL">Limit longest side (px)</span>
                 <select id="max-dimension">
@@ -271,45 +265,37 @@
                 <div class="page" id="result-page" hidden>
                   <img id="result-image" class="document-canvas" alt="">
                   <canvas id="result-preview" class="document-canvas" hidden></canvas>
-                  <div class="stage-actions">
-                    <button id="compare" class="icon-button" type="button" data-i18n-aria-label="COMPARE" data-i18n-title="COMPARE">
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M12 3v18"/>
-                        <path d="M4 7h5v10H4z"/>
-                        <path d="M15 7h5v10h-5z"/>
-                      </svg>
-                    </button>
-                    <button id="open-tab" class="icon-button" type="button" disabled data-i18n-aria-label="OPEN_TAB" data-i18n-title="OPEN_TAB">
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M14 4h6v6"/>
-                        <path d="M20 4 11 13"/>
-                        <path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>
-                      </svg>
-                    </button>
-                    <button id="download" class="icon-button icon-button--primary" type="button" disabled data-i18n-aria-label="DOWNLOAD" data-i18n-title="DOWNLOAD">
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M12 4v10"/>
-                        <path d="m8 11 4 4 4-4"/>
-                        <path d="M5 19h14"/>
-                      </svg>
-                    </button>
-                  </div>
                 </div>
               </div>
               <p class="pane-note" id="result-note"></p>
-              <div class="live-exposure" id="live-exposure" hidden>
-                <span class="field-label" id="live-exposure-label" data-i18n="LIVE_EXPOSURE">Exposure</span>
-                <input
-                  id="live-exposure-range"
-                  type="range"
-                  min="-3"
-                  max="3"
-                  step="0.05"
-                  value="0"
-                  aria-labelledby="live-exposure-label"
-                >
-                <output id="live-exposure-value" for="live-exposure-range">0.00</output>
-                <button id="live-exposure-reset" class="link-button" type="button" data-i18n="RESET">Reset</button>
+              <div class="stage-actions" id="stage-actions">
+                <button id="adjust" class="icon-button" type="button" disabled data-i18n-aria-label="ADJUST" data-i18n-title="ADJUST">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 20h4L19 9a2.83 2.83 0 0 0-4-4L4 16Z"/>
+                    <path d="m14.5 6.5 3 3"/>
+                  </svg>
+                </button>
+                <button id="compare" class="icon-button" type="button" data-i18n-aria-label="COMPARE" data-i18n-title="COMPARE">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 3v18"/>
+                    <path d="M4 7h5v10H4z"/>
+                    <path d="M15 7h5v10h-5z"/>
+                  </svg>
+                </button>
+                <button id="open-tab" class="icon-button" type="button" disabled data-i18n-aria-label="OPEN_TAB" data-i18n-title="OPEN_TAB">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M14 4h6v6"/>
+                    <path d="M20 4 11 13"/>
+                    <path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>
+                  </svg>
+                </button>
+                <button id="download" class="icon-button icon-button--primary" type="button" disabled data-i18n-aria-label="DOWNLOAD" data-i18n-title="DOWNLOAD">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 4v10"/>
+                    <path d="m8 11 4 4 4-4"/>
+                    <path d="M5 19h14"/>
+                  </svg>
+                </button>
               </div>
             </section>
           </div>
@@ -365,6 +351,70 @@
       <p class="compare-note" data-i18n="COMPARE_NOTE">
         The left side is how this device already renders the HDR file.
       </p>
+    </dialog>
+
+    <dialog class="adjust-dialog" id="adjust-dialog">
+      <div class="adjust-head">
+        <h2 data-i18n="ADJUST_TITLE">Adjust image</h2>
+        <button id="adjust-close" class="icon-button" type="button" data-i18n-aria-label="CLOSE" data-i18n-title="CLOSE">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m6 6 12 12M18 6 6 18"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="adjust-body">
+        <label class="setting setting--range" id="adjust-exposure-field">
+          <span class="field-label" data-i18n="EXPOSURE_LABEL">Exposure (stops)</span>
+          <input id="exposure" type="range" min="-3" max="3" step="0.05" value="0">
+          <output id="exposure-value" for="exposure">0.00</output>
+        </label>
+
+        <label class="setting setting--range">
+          <span class="field-label" data-i18n="CONTRAST_LABEL">Contrast</span>
+          <input id="contrast" type="range" min="-100" max="100" step="1" value="0">
+          <output id="contrast-value" for="contrast">0</output>
+        </label>
+
+        <label class="setting setting--range">
+          <span class="field-label" data-i18n="HIGHLIGHTS_LABEL">Highlights</span>
+          <input id="highlights" type="range" min="-100" max="100" step="1" value="0">
+          <output id="highlights-value" for="highlights">0</output>
+        </label>
+
+        <label class="setting setting--range">
+          <span class="field-label" data-i18n="SHADOWS_LABEL">Shadows</span>
+          <input id="shadows" type="range" min="-100" max="100" step="1" value="0">
+          <output id="shadows-value" for="shadows">0</output>
+        </label>
+
+        <label class="setting setting--range">
+          <span class="field-label" data-i18n="WHITES_LABEL">White point</span>
+          <input id="whites" type="range" min="-100" max="100" step="1" value="0">
+          <output id="whites-value" for="whites">0</output>
+        </label>
+
+        <label class="setting setting--range">
+          <span class="field-label" data-i18n="BLACKS_LABEL">Black point</span>
+          <input id="blacks" type="range" min="-100" max="100" step="1" value="0">
+          <output id="blacks-value" for="blacks">0</output>
+        </label>
+
+        <label class="setting setting--range">
+          <span class="field-label" data-i18n="SATURATION_LABEL">Saturation</span>
+          <input id="saturation" type="range" min="-100" max="100" step="1" value="0">
+          <output id="saturation-value" for="saturation">0</output>
+        </label>
+      </div>
+
+      <div class="adjust-foot">
+        <p class="adjust-note" data-i18n="ADJUST_NOTE">
+          Changes preview live and apply to the downloaded file.
+        </p>
+        <button id="adjust-reset" class="button secondary" type="button" data-i18n="ADJUST_RESET">
+          Reset adjustments
+        </button>
+      </div>
     </dialog>
 
     <noscript>

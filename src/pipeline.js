@@ -24,6 +24,7 @@ import {
   yuv2rgbMatrix
 } from "./colorspace.js";
 import { createCurve, tonemapPixel } from "./tonemap.js";
+import { GRADE_DEFAULTS, applyGrade, createGrade } from "./grade.js";
 
 export const DEFAULT_SETTINGS = Object.freeze({
   /** Tone curve from libavfilter/vf_tonemap.c. */
@@ -44,6 +45,11 @@ export const DEFAULT_SETTINGS = Object.freeze({
   brightness: "auto",
   /** Exposure compensation in stops, applied in linear light. */
   exposure: 0,
+  /**
+   * Display-referred tonal controls, applied after the tone curve. All are
+   * neutral at 0, and the whole stage is skipped when they are (see grade.js).
+   */
+  ...GRADE_DEFAULTS,
   /** "auto" trusts the file tagging. */
   inputOverride: "auto",
   outputFormat: "image/jpeg",
@@ -324,6 +330,27 @@ function yieldToBrowser() {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+/** Scratch for the encode below; single-threaded, so one instance is enough. */
+const ENCODED = new Float32Array(3);
+
+/**
+ * Encodes one tone-mapped pixel with the SDR transfer function and writes it
+ * out, applying the display-referred grade if there is one.
+ *
+ * Shared by `renderPreview` and `convert` so the live canvas and the file that
+ * gets downloaded cannot disagree about the last step of the pipeline.
+ */
+function encodePixel(out, index, rgb, alpha, grade) {
+  ENCODED[0] = delinearizeValue("iec61966-2-1", Math.min(rgb[0], 1));
+  ENCODED[1] = delinearizeValue("iec61966-2-1", Math.min(rgb[1], 1));
+  ENCODED[2] = delinearizeValue("iec61966-2-1", Math.min(rgb[2], 1));
+  if (grade) applyGrade(grade, ENCODED);
+  out[index] = Math.round(ENCODED[0] * 255);
+  out[index + 1] = Math.round(ENCODED[1] * 255);
+  out[index + 2] = Math.round(ENCODED[2] * 255);
+  out[index + 3] = Math.round(Math.min(Math.max(alpha, 0), 1) * 255);
+}
+
 /**
  * Linearises the (cropped) source once so the exposure slider can be live.
  *
@@ -409,6 +436,7 @@ export function renderPreview(prepared, settings) {
   const curve = createCurve(options.algorithm, options.param, peak);
   const gamut = rgb2rgbMatrix(primaries in COLOR_PRIMARIES ? primaries : "bt709", "bt709");
   const isHlg = transfer === "hlg";
+  const grade = createGrade(options);
 
   const output = new ImageData(width, height);
   const out = output.data;
@@ -449,10 +477,7 @@ export function renderPreview(prepared, settings) {
     rgb[2] = b;
     tonemapPixel(rgb, curve, options.desat, coeffs);
 
-    out[index] = Math.round(delinearizeValue("iec61966-2-1", Math.min(rgb[0], 1)) * 255);
-    out[index + 1] = Math.round(delinearizeValue("iec61966-2-1", Math.min(rgb[1], 1)) * 255);
-    out[index + 2] = Math.round(delinearizeValue("iec61966-2-1", Math.min(rgb[2], 1)) * 255);
-    out[index + 3] = Math.round(Math.min(Math.max(alpha[i], 0), 1) * 255);
+    encodePixel(out, index, rgb, alpha[i], grade);
   }
 
   return output;
@@ -482,6 +507,7 @@ export async function convert(source, settings, crop, { onProgress, signal, scen
   const curve = createCurve(options.algorithm, options.param, peak);
   const gamut = rgb2rgbMatrix(primaries in COLOR_PRIMARIES ? primaries : "bt709", "bt709");
   const isHlg = transfer === "hlg";
+  const grade = createGrade(options);
 
   const sample = createSampler(source, matrixName);
   const output = new ImageData(area.width, area.height);
@@ -537,11 +563,9 @@ export async function convert(source, settings, crop, { onProgress, signal, scen
         rgb[2] = b;
         tonemapPixel(rgb, curve, options.desat, coeffs);
 
-        // 6. encode with the SDR transfer function
-        out[index] = Math.round(delinearizeValue("iec61966-2-1", Math.min(rgb[0], 1)) * 255);
-        out[index + 1] = Math.round(delinearizeValue("iec61966-2-1", Math.min(rgb[1], 1)) * 255);
-        out[index + 2] = Math.round(delinearizeValue("iec61966-2-1", Math.min(rgb[2], 1)) * 255);
-        out[index + 3] = Math.round(Math.min(Math.max(pixel[3], 0), 1) * 255);
+        // 6. encode with the SDR transfer function, then the display-referred
+        //    tonal controls, if the user has touched any (src/grade.js)
+        encodePixel(out, index, rgb, pixel[3], grade);
         index += 4;
       }
     }
