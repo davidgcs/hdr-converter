@@ -134,6 +134,12 @@ export function eotfSt2084(x) {
   return (Math.pow(a / b, 1.0 / ST2084_M1) * ST2084_MAX_LUMINANCE) / REFERENCE_WHITE;
 }
 
+/** SMPTE ST 2084 inverse EOTF: REFERENCE_WHITE units -> normalised PQ signal. */
+export function inverseEotfSt2084(value) {
+  const y = Math.pow(Math.min(Math.max((value * REFERENCE_WHITE) / ST2084_MAX_LUMINANCE, 0), 1), ST2084_M1);
+  return Math.pow((ST2084_C1 + ST2084_C2 * y) / (1 + ST2084_C3 * y), ST2084_M2);
+}
+
 /** colorspace_common.cl -> inverse_oetf_hlg (scene linear, 0..12) */
 export function inverseOetfHlg(x) {
   if (x < 0.5) return 4.0 * x * x;

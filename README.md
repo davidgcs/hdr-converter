@@ -11,9 +11,12 @@ runs locally in the browser — no upload, no server.
 - Preview, crop and convert HDR images to SDR, side by side.
 - Crop ratio locked to the original aspect ratio by default, so the result keeps
   the proportions of the source. Free, 1:1, 16:9, 4:3 and 3:2 are also available.
-- Tone mapping curves ported from FFmpeg's `tonemap` filter.
-- Automatic exposure so HDR photos look right on ordinary screens and in
-  messaging apps, instead of coming out dark.
+- Faithful by default: every tone that an SDR screen can show is reproduced at
+  the same light level it had in the HDR file, and only what is brighter is
+  rolled off, with the ITU-R BT.2390 curve. A dark scene stays as dark as it
+  was made; shadow detail is kept above the SDR screen's black.
+- FFmpeg's `tonemap` curves (Mobius, Hable, Reinhard, …) and an auto-exposure
+  mode are there as alternatives.
 - An adjust panel behind the pencil icon: exposure, contrast, highlights,
   shadows, white point, black point and saturation, previewing live on a copy
   of the image inside the panel. Every one is neutral by default, a
@@ -24,7 +27,9 @@ runs locally in the browser — no upload, no server.
   pointer-based and works the same with a finger as with a mouse.
 - Every setting has an **i** button explaining what it changes.
 - Sensible defaults for a normal HDR AVIF; every knob is optional.
-- JPEG, PNG or WebP output with a quality slider and an optional size limit.
+- JPEG, PNG or WebP output with an optional size limit. JPEG is 8-bit sRGB with
+  an embedded sRGB profile, for WhatsApp, Instagram and the web; PNG is 16-bit
+  sRGB, uncompressed, for archiving everything the tone curve produced.
 - The result preview *is* the encoded file, so downloading it, right-clicking it
   or opening it in a new tab all give you the same image.
 - English and Spanish interface with a persistent light/dark theme.
@@ -33,7 +38,8 @@ runs locally in the browser — no upload, no server.
 
 ## How the conversion works
 
-The pipeline mirrors the filter chain FFmpeg recommends for HDR to SDR:
+The pipeline follows the filter chain FFmpeg recommends for HDR to SDR, with
+the ITU's BT.2390 curve in place of FFmpeg's default:
 
 ```sh
 ffmpeg -i input.avif -vf "zscale=t=linear:npl=100,format=gbrpf32le,\
@@ -51,17 +57,21 @@ zscale=p=bt709,tonemap=tonemap=mobius:desat=2,zscale=t=bt709:m=bt709:r=tv" outpu
 2. **Linearise.** The source transfer function (PQ / HLG / sRGB / BT.709) is
    inverted, with HLG also getting its OOTF. `1.0` means 100 nits, the same
    reference white FFmpeg uses.
-3. **Adapt.** The scene's diffuse white is measured and the image is
-   exposed around it. This is the one step the FFmpeg chain above does *not*
-   do, and it is why that chain leaves so many HDR photos looking dark — see
-   [Brightness](#brightness) below.
+3. **Adapt.** Nothing, by default: absolute light is kept, with 100 cd/m² as
+   SDR white. The optional brightness modes re-expose here — see
+   [Brightness](#brightness).
 4. **Gamut.** Linear BT.2020 is converted to BT.709 with a matrix built from the
-   primaries, exactly like `zscale=p=bt709`.
-5. **Tone map.** A port of `libavfilter/vf_tonemap.c`: highlight desaturation,
-   then the selected curve applied to the brightest component so hues stay put.
+   primaries, like `zscale=p=bt709`. The few colours BT.709 cannot show are
+   moved toward grey at constant luminance, just far enough to fit, instead of
+   having their negative channel clipped — which keeps their hue and
+   brightness and gives up only the saturation that does not exist in BT.709.
+5. **Tone map.** ITU-R BT.2390 by default (below), or a port of
+   `libavfilter/vf_tonemap.c`. Either way the curve is applied to the brightest
+   component and the others are scaled with it, so hues stay put.
 6. **Encode.** Back to sRGB, then the display-referred adjustments from the
    pencil panel if any are set, cropped, optionally resized, then
-   JPEG/PNG/WebP.
+   JPEG/PNG/WebP. PNG is written at 16 bits per channel straight from the
+   pipeline; JPEG and WebP go through the browser's 8-bit encoder.
 
 The ported maths is covered by a reference test: a plain sRGB PNG round-trips
 pixel-exact, and an 8-bit AVIF decodes within ~0.6/255 mean difference of
@@ -69,47 +79,77 @@ Chrome's own renderer.
 
 ## Brightness
 
-HDR encodes *absolute* luminance: `zscale=npl=100` says "1.0 is 100 nits" and
-`tonemap` only compresses what is brighter than that. Everything below is
-passed straight through, so a scene that was graded to look good on a 1000-nit
-display keeps its original, genuinely low nit values. On an HDR screen that is
-exactly right; on a phone, a laptop or WhatsApp it lands in the display's black
-floor and the picture looks far darker than the original did.
+HDR encodes *absolute* luminance. `zscale=npl=100` says "1.0 is 100 nits", and
+an SDR reference display is a 100 cd/m² screen, so the faithful conversion
+shows every tone at the light level it was mastered at and only has to deal
+with what is brighter than the SDR screen can go. That is the default.
 
-A real photo of a lamp-lit room measures a median of **0.56 nits**. Reproduced
-faithfully, that is a median of 17/255 — a correct answer to the wrong
-question.
+### Why not re-expose automatically
 
-So the tool adds the step FFmpeg deliberately skips, and exposes the picture
-the way a photographer would before the curve runs. FFmpeg omits it because
-measuring per frame makes video flicker, which cannot happen for a single
-still.
+Earlier versions re-exposed every image so that its diffuse white landed near
+SDR white. That makes all scenes the same brightness, which is exactly wrong
+for a scene that is dark on purpose. A reported Resident Evil 4 screenshot
+shows what it does:
 
-The measurement anchors on the scene's **diffuse white**: the level the
-brightest *ordinary* surfaces sit at, as opposed to speculars and light
-sources, estimated as the 90th percentile of the lit pixels and mapped to 75
-nits. That leaves the top of the scene room to roll off into white instead of
-clipping there.
+| measured from the file | value |
+| --- | --- |
+| encoding (`colr`/`nclx`, and the AV1 sequence header agrees) | BT.2020, PQ, identity matrix, full range, 10-bit 4:4:4 |
+| `clli` box | MaxCLL 80, MaxFALL 80 cd/m² |
+| actual MaxCLL / frame-average (CTA-861.3, maxRGB) | **251 / 1.77 cd/m²** |
+| luminance P10 / P50 / P90 / P99 | 0.02 / 0.25 / 1.78 / 25.5 cd/m² |
+| share of pixels below 1 cd/m² | 82% |
 
-Reinhard's log-average key is the textbook estimator for this, and it was the
-first thing tried here, but it is not robust for the job: it weighs every pixel
-equally, so a letterboxed frame reports a far lower average than the same
-picture without the bars. One real 2560×1440 screenshot is **29% pure black**,
-which dragged its log-average below that of a much darker photo and demanded a
-64× correction — a badly blown-out result. A high percentile of the lit pixels
-measures the same quantity, ignores matte borders entirely, and barely moves
-when the bars are cropped away (3.65× versus 3.49× on that file).
+The `clli` tag is a placeholder — 80 is scRGB's 1.0 — and is ignored; the peak
+is measured. The scene really is that dark: a torch-lit corridor, code 0 used
+as full-range black, nothing clipping. Auto exposure multiplied it by 29×,
+five stops, and turned it into a bright blue daylight shot (median 76/255).
+The faithful mapping gives a median of 13/255 with the torch-lit subject as
+the brightest thing in the frame, which is what the original looks like.
+
+For reference, macOS (ColorSync) and Chrome both put SDR white at BT.2408's
+203 cd/m² when they show a PQ file on an SDR screen — half the 100 cd/m²
+target used here — which is why HDR screenshots look so dark when shared
+as-is.
+
+### The tone curve
+
+ITU-R BT.2390's EETF was chosen on this data, not by habit. Per luminance band
+of that screenshot, how each curve reproduces the faithful level (1.00 is
+exact):
+
+| curve | < 1 | 1–30 | 30–100 (the lit subject) | > 100 (the lights) |
+| --- | --- | --- | --- | --- |
+| **BT.2390** | 1.00 | 1.00 | 1.00 | 0.67, 18 distinct levels |
+| Mobius (FFmpeg) | 1.00 | 1.00 | 0.94 | 0.58 |
+| Hable | 0.65 | 0.65 | 0.58 | 0.47 |
+| Reinhard | 1.36 | 1.34 | 0.92 | 0.56 |
+| Clip | 1.00 | 1.00 | 1.00 | 0.70, 1 level (clipped) |
+
+BT.2390 works in the PQ domain and puts its knee where the measured peak
+needs it — here about 60 cd/m² — so 99.7% of the pixels are untouched and only
+the lights are rolled off. Content that already fits under 100 cd/m² gets no
+knee at all.
+
+Its second half, black point adaptation, maps source black onto the SDR
+display's black (1000:1, so 0.1 cd/m²) along a curve that has faded out by the
+midtones: ×1.36 at 1 cd/m², ×1.05 at 10, ×1.00 at 60. Without it, 99% of this
+image's darkest band and 8% of the next rounded into code 0 — detail the HDR
+display shows. Pure black stays at code 0. SDR sources skip it, since they
+were graded for an SDR display already.
+
+The implementation follows libplacebo's (`bt2390()` in
+`src/tone_mapping.c`) with the Recommendation's knee offset of 0.5, and the
+browser output matches an independent Python/libavif implementation to within
+0.02/255 on all three test files.
 
 | Mode | What it does |
 | --- | --- |
-| **Auto exposure** (default) | Finds the scene's diffuse white and puts it just below SDR white. The room above becomes a median of 84/255 with 0.03% clipping; the letterboxed screenshot lands at 62/255 with none. |
-| HDR reference white (203 nits) | Maps BT.2408 diffuse white to SDR white. Standards-correct, still dark for dim scenes. |
-| Absolute (FFmpeg, 100 nits) | The `npl=100` behaviour of the command line above, for matching FFmpeg output exactly. |
+| **Faithful** (default) | Absolute light, 100 cd/m² = SDR white. The screenshot above: median 13/255; a lamp-lit room 22/255; an overcast street 32/255. |
+| HDR reference white (203 nits) | BT.2408 alignment, the way macOS and Chrome show PQ on an SDR screen. Half as bright. |
+| Auto exposure | Re-exposes every scene to the same level (the 90th percentile of the lit pixels to 75 cd/m²). Brightens dark scenes, and changes their look. |
 
-Auto exposure only runs on genuine PQ and HLG sources. An SDR file has already
-been graded for SDR, so re-exposing it would fight the grade it arrived with;
-those files convert identically in every mode. The **Exposure** slider still
-composes on top, so `+1` is one stop above whichever mode is selected.
+The **Exposure** slider composes on top of any mode, so `+1` is one stop above
+it.
 
 ### Adjusting it by eye
 
@@ -164,14 +204,14 @@ end of the settings row, puts every control back to the recommended baseline.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| Brightness | Auto exposure | How HDR luminance is mapped to SDR. See [Brightness](#brightness). |
-| Tone mapping | `mobius` | FFmpeg curve. Mobius leaves everything below 30 nits untouched and rolls off the highlights, which keeps photos looking natural. `hable` reproduces the classic FFmpeg one-liner but renders noticeably darker. |
-| Source peak brightness | Auto | Browsers do not expose mastering metadata, so the peak is measured from the image. `Format standard` uses 10000 nits for PQ and 1000 for HLG; `Custom` lets you type a value. |
-| Highlight desaturation | `2` | FFmpeg's `desat`. Pixels brighter than 200 nits are pulled towards their luma so specular highlights do not turn into odd colours. |
+| Brightness | Faithful | How HDR luminance is mapped to SDR. See [Brightness](#brightness). |
+| Tone mapping | BT.2390 | The ITU-R curve: leaves every tone that fits untouched, rolls off only what is brighter, keeps shadow detail above the SDR screen's black. The FFmpeg curves are also available — `mobius` compresses from 30 nits up, `hable` renders noticeably darker. |
+| Source peak brightness | Auto | Measured from every pixel, after the conversion to BT.709 — not taken from the file's `clli` box, which HDR screenshots often fill with a placeholder. `Format standard` uses 10000 nits for PQ and 1000 for HLG; `Custom` lets you type a value. |
+| Highlight desaturation | `0` | FFmpeg's `desat`: pulls pixels brighter than `desat × 100` nits towards their luma. `0` keeps every colour's chromaticity as measured; FFmpeg's own default is `2`. |
 | Crop ratio | Original | Keeps the source aspect ratio while cropping. |
-| Output format / quality | JPEG, 92 | PNG keeps alpha and skips the quality slider. |
+| Output format / quality | JPEG, 92 | JPEG: 8-bit sRGB with an embedded sRGB profile. PNG: 16-bit sRGB (`sRGB` chunk), uncompressed, keeps alpha — about 22 MB for 2560×1440. |
 | Read source as | Auto | Override when a file has wrong or missing HDR tagging. |
-| Curve parameter | FFmpeg default | `tonemap`'s `param` (0.3 for mobius, 1.8 for gamma, …). |
+| Curve parameter | Standard value | BT.2390's knee offset (0.5), or `tonemap`'s `param` (0.3 for mobius, 1.8 for gamma, …). |
 | Limit longest side | Original | Optional downscale; the aspect ratio is preserved. |
 
 The pencil icon under the result opens the per-image adjustments — exposure,
@@ -206,6 +246,10 @@ Colour and tone mapping maths ported from [FFmpeg](https://git.ffmpeg.org/ffmpeg
 (`libavfilter/vf_tonemap.c`, `libavfilter/colorspace.c`,
 `libavfilter/opencl/colorspace_common.cl`, `libavutil/csp.c`), which is
 licensed LGPL-2.1-or-later. Each ported function notes its origin in the source.
+
+The BT.2390 curve implements ITU-R BT.2390's EETF, including its black point
+adaptation, and was checked against [libplacebo](https://code.videolan.org/videolan/libplacebo)'s
+`bt2390()` (`src/tone_mapping.c`, LGPL-2.1-or-later).
 
 The creator banner is shared with [Safe Layer](https://github.com/davidgcs/safelayer):
 copy the `.github-brand` element from `index.html` plus `github-brand.css` to

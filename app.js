@@ -2,12 +2,11 @@ import { createTranslator, translations } from "./src/i18n.js";
 import { decodeFile, supportsWebCodecs } from "./src/decode.js";
 import {
   DEFAULT_SETTINGS,
-  canvasToBlob,
   convert,
+  encodeResult,
   normalizeCrop,
   prepareScene,
-  renderPreview,
-  toCanvas
+  renderPreview
 } from "./src/pipeline.js";
 import { REFERENCE_WHITE } from "./src/colorspace.js";
 import { GRADE_DEFAULTS, GRADE_KEYS } from "./src/grade.js";
@@ -340,9 +339,22 @@ function writeSettings(settings) {
   updateSettingVisibility();
 }
 
+/**
+ * Bumped whenever a tone default changes. Settings saved by an older version
+ * only keep the preferences that are still meaningful — the output format,
+ * quality, size limit and crop ratio — because a stored tone curve or
+ * brightness mode from back when it was the default is indistinguishable from
+ * a deliberate choice, and restoring it would silently keep the old look.
+ */
+const SETTINGS_VERSION = 2;
+const RETIRED_ON_UPGRADE = ["algorithm", "param", "desat", "brightness", "exposure"];
+
 function persistSettings() {
   try {
-    localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify({ ...readSettings(), aspect: state.aspect }));
+    localStorage.setItem(
+      STORAGE_KEYS.settings,
+      JSON.stringify({ ...readSettings(), aspect: state.aspect, version: SETTINGS_VERSION })
+    );
   } catch {
     // Settings persistence is optional.
   }
@@ -354,6 +366,9 @@ function restoreSettings() {
     saved = JSON.parse(localStorage.getItem(STORAGE_KEYS.settings) || "null");
   } catch {
     saved = null;
+  }
+  if (saved && saved.version !== SETTINGS_VERSION) {
+    for (const key of RETIRED_ON_UPGRADE) delete saved[key];
   }
   const settings = { ...DEFAULT_SETTINGS, ...(saved || {}) };
   writeSettings(settings);
@@ -693,7 +708,7 @@ function ensurePrepared(item, settings) {
 }
 
 async function convertItem(item, settings, onProgress) {
-  const { imageData, peak } = await convert(item.source, settings, item.crop, {
+  const converted = await convert(item.source, settings, item.crop, {
     onProgress,
     // Reuse the measurement the preview exposed from, so releasing the slider
     // can never shift the brightness the user just dialled in.
@@ -702,11 +717,10 @@ async function convertItem(item, settings, onProgress) {
       : undefined
   });
 
-  const canvas = toCanvas(imageData, settings.maxDimension);
-  const blob = await canvasToBlob(canvas, settings.outputFormat, settings.quality);
+  const { canvas, blob } = await encodeResult(converted, settings);
   if (item.resultUrl) URL.revokeObjectURL(item.resultUrl);
 
-  item.result = { canvas, blob, peak };
+  item.result = { canvas, blob, peak: converted.peak };
   item.resultUrl = URL.createObjectURL(blob);
 }
 

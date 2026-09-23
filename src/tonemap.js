@@ -6,10 +6,22 @@
  *    brightest-component scaling) and the default parameters declared in
  *    `tonemap_options[]`.
  *
+ * Plus the ITU-R BT.2390 EETF, which FFmpeg's filter does not have; see
+ * `bt2390Curve`.
+ *
  * All inputs/outputs are linear light in FFmpeg units (1.0 == 100 nits).
  */
 
-export const TONEMAP_ALGORITHMS = ["none", "linear", "gamma", "clip", "reinhard", "hable", "mobius"];
+import { eotfSt2084, inverseEotfSt2084 } from "./colorspace.js";
+
+export const TONEMAP_ALGORITHMS = ["none", "linear", "gamma", "clip", "reinhard", "hable", "mobius", "bt2390"];
+
+/**
+ * Contrast of the SDR display the BT.2390 curve targets. 1000:1 is the usual
+ * SDR reference (libplacebo's PL_COLOR_SDR_CONTRAST uses the same figure), so
+ * with a 100 cd/m2 white the display's black sits at 0.1 cd/m2.
+ */
+export const SDR_CONTRAST = 1000;
 
 /** libavfilter/vf_tonemap.c -> init() default parameters. */
 export function defaultParam(algorithm) {
@@ -18,6 +30,9 @@ export function defaultParam(algorithm) {
       return 1.8;
     case "mobius":
       return 0.3;
+    case "bt2390":
+      // BT.2390's own knee: KS = 1.5 * maxLum - 0.5.
+      return 0.5;
     default:
       return 1.0;
   }
@@ -57,10 +72,93 @@ export function mobius(x, j, peak) {
 }
 
 /**
- * Returns the scalar curve used by `tonemap`, matching the switch in
- * libavfilter/vf_tonemap.c -> tonemap().
+ * ITU-R BT.2390 EETF, mapping a PQ master onto a 100 cd/m2 SDR display.
+ *
+ * Works in the PQ domain, which is perceptually uniform, so both ends of the
+ * range are shaped by how visible a change is rather than by raw light:
+ *
+ *  - Below the knee (KS = (1 + offset) * maxLum - offset, offset 0.5 in the
+ *    Recommendation) the signal is left exactly as mastered. With a measured
+ *    peak of 273 cd/m2 that knee is ~60 cd/m2, so every tone up to there is
+ *    reproduced at its absolute level; only what is brighter is rolled off, by
+ *    a Hermite spline, into the headroom that is left. Content that already
+ *    fits under 100 cd/m2 has no knee at all and passes through untouched.
+ *  - Black point adaptation then maps source black onto the display's black
+ *    (1 / SDR_CONTRAST of white) along `minLum * (1 - x)^bp`, which fades out
+ *    well before the midtones. Without it, shadow detail that an HDR display
+ *    shows is rounded into code 0 on an SDR one.
+ *
+ * Follows the current revision as implemented by libplacebo (bt2390() in
+ * src/tone_mapping.c): the black-point exponent min(1 / minLum, 4) and the
+ * gain that keeps the top of the range on target after the lift.
+ *
+ * The result is relative to the display's range — its black is 0, its white
+ * is 1 — which is what an SDR signal encodes. The display adds its own black
+ * back when it shows the file.
+ *
+ * @param {number} peak  source peak, REFERENCE_WHITE units
+ * @param {number} offset  knee offset
+ * @param {{adaptBlack?: boolean}} options  black point adaptation is for HDR
+ *   masters; an SDR source is already graded for an SDR display's black
+ * @returns {(sig: number) => number}
  */
-export function createCurve(algorithm, param, peak) {
+export function bt2390Curve(peak, offset = defaultParam("bt2390"), { adaptBlack = true } = {}) {
+  const black = adaptBlack ? 1 / SDR_CONTRAST : 0;
+  const inMin = inverseEotfSt2084(0);
+  const inMax = inverseEotfSt2084(Math.max(peak, 1e-6));
+  const span = inMax - inMin;
+  const rescale = (value) => (inverseEotfSt2084(value) - inMin) / span;
+  const minLum = rescale(black);
+  const maxLum = rescale(1);
+  const ks = (1 + offset) * maxLum - offset;
+  const bp = minLum > 0 ? Math.min(1 / minLum, 4) : 4;
+  const gain = maxLum < 1 ? 1 / (1 + (minLum / maxLum) * Math.pow(1 - maxLum, bp)) : 1;
+
+  const exact = (sig) => {
+    let x = Math.min(Math.max(rescale(sig), 0), 1);
+    if (ks < 1 && x >= ks) {
+      const t = (x - ks) / (1 - ks);
+      const t2 = t * t;
+      const t3 = t2 * t;
+      x = (2 * t3 - 3 * t2 + 1) * ks + (t3 - 2 * t2 + t) * (1 - ks) + (-2 * t3 + 3 * t2) * maxLum;
+    }
+    if (x < 1) {
+      x += minLum * Math.pow(1 - x, bp);
+      x = gain * (x - minLum) + minLum;
+    }
+    const shown = eotfSt2084(x * span + inMin);
+    return Math.min(Math.max((shown - black) / (1 - black), 0), 1);
+  };
+
+  // Five powers per pixel would dominate the live preview, so tabulate. The
+  // table is indexed by sqrt(sig / peak), which spends its resolution near
+  // black, where the black-point lift bends the curve hardest.
+  const size = 4096;
+  const table = new Float32Array(size + 1);
+  for (let i = 0; i <= size; i++) {
+    const u = i / size;
+    table[i] = exact(u * u * peak);
+  }
+  const curve = (sig) => {
+    if (!(sig > 0)) return table[0];
+    const position = Math.min(Math.sqrt(sig / peak), 1) * size;
+    const index = Math.min(position | 0, size - 1);
+    const fraction = position - index;
+    return table[index] + (table[index + 1] - table[index]) * fraction;
+  };
+  curve.exact = exact;
+  return curve;
+}
+
+/**
+ * Returns the scalar curve used by `tonemap`, matching the switch in
+ * libavfilter/vf_tonemap.c -> tonemap(), plus BT.2390.
+ *
+ * `hdr` is false for SDR sources, which BT.2390 then leaves untouched: its
+ * black point adaptation compensates for an SDR display, and an SDR file was
+ * made for one already.
+ */
+export function createCurve(algorithm, param, peak, { hdr = true } = {}) {
   const p = normalizeParam(algorithm, param);
   switch (algorithm) {
     case "linear":
@@ -80,6 +178,8 @@ export function createCurve(algorithm, param, peak) {
       return (sig) => ((sig / (sig + p)) * (peak + p)) / peak;
     case "mobius":
       return (sig) => mobius(sig, p, peak);
+    case "bt2390":
+      return bt2390Curve(peak, p, { adaptBlack: hdr });
     case "none":
     default:
       return (sig) => sig;

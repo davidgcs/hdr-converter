@@ -123,7 +123,8 @@
             <label class="setting">
               <span class="field-label" data-i18n="TONEMAP_LABEL">Tone mapping</span>
               <select id="algorithm">
-                <option value="mobius" data-i18n="TONEMAP_MOBIUS">Mobius (recommended)</option>
+                <option value="bt2390" data-i18n="TONEMAP_BT2390">BT.2390 (ITU, recommended)</option>
+                <option value="mobius" data-i18n="TONEMAP_MOBIUS">Mobius (FFmpeg)</option>
                 <option value="hable" data-i18n="TONEMAP_HABLE">Hable (filmic)</option>
                 <option value="reinhard" data-i18n="TONEMAP_REINHARD">Reinhard</option>
                 <option value="gamma" data-i18n="TONEMAP_GAMMA">Gamma</option>
@@ -136,9 +137,9 @@
             <label class="setting">
               <span class="field-label" data-i18n="BRIGHTNESS_LABEL">Brightness</span>
               <select id="brightness">
-                <option value="auto" data-i18n="BRIGHTNESS_AUTO">Auto exposure (recommended)</option>
+                <option value="standard" data-i18n="BRIGHTNESS_STANDARD">Faithful, 100 nits = SDR white (recommended)</option>
                 <option value="reference" data-i18n="BRIGHTNESS_REFERENCE">HDR reference white (203 nits)</option>
-                <option value="standard" data-i18n="BRIGHTNESS_STANDARD">Absolute (FFmpeg, 100 nits)</option>
+                <option value="auto" data-i18n="BRIGHTNESS_AUTO">Auto exposure (brightens dark scenes)</option>
               </select>
             </label>
 
@@ -158,8 +159,8 @@
 
             <label class="setting setting--range">
               <span class="field-label" data-i18n="DESAT_LABEL">Highlight desaturation</span>
-              <input id="desat" type="range" min="0" max="6" step="0.5" value="2">
-              <output id="desat-value" for="desat">2</output>
+              <input id="desat" type="range" min="0" max="6" step="0.5" value="0">
+              <output id="desat-value" for="desat">0</output>
             </label>
 
             <label class="setting">
