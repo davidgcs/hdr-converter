@@ -27,6 +27,10 @@ runs locally in the browser — no upload, no server.
   Every one is neutral by default, and an untouched conversion is
   byte-for-byte what it was without the panel. A double-click resets any
   slider, and converting again starts from the faithful result.
+
+  Click the panel's picture to see it without your edits for three seconds,
+  or hold it to keep it that way until you let go (Space or Enter work too).
+  It is the same conversion, at full size, with only the edits taken away.
 - A before/after view with a draggable wipe, comparing the converted file
   against the way your device already renders the HDR original. The drag is
   pointer-based and works the same with a finger as with a mouse, and it only
@@ -172,6 +176,18 @@ controls — so `renderPreview` only has to redo the gain, the gamut matrix, the
 curve, the sRGB encode and the grade: around 50 ms for a 2560×1440 image.
 While you drag, the pane shows that canvas; when you let go the file is
 re-encoded at full resolution and the preview becomes the real file again.
+
+**Click or hold the picture to compare.** A click shows the image without
+the edits for three seconds; clicking again during that time returns at once,
+and holding keeps the unedited image for as long as the press lasts. It is the
+conversion the result on screen was made with — the settings are recorded with
+the result, so changing the tone curve afterwards, without converting, does not
+change what the comparison shows — rendered at full size, because a reduced
+"before" would look softer than the full-size result and credit a Sharpness or
+Clarity edit with detail that is really resolution. That render runs in the
+background when the panel opens, once per conversion, and steps aside while an
+edit is being encoded; until it is ready a press shows a stand-in from the
+preview buffer.
 
 **Double-click any slider to reset it** — to 0 for the adjustments, and to its
 own default for settings like quality. The neutral position is read from the
