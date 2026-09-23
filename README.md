@@ -24,7 +24,9 @@ runs locally in the browser — no upload, no server.
   faithful result.
 - A before/after view with a draggable wipe, comparing the converted file
   against the way your device already renders the HDR original. The drag is
-  pointer-based and works the same with a finger as with a mouse.
+  pointer-based and works the same with a finger as with a mouse, and it only
+  moves composited layers, so it never repaints the pictures while you drag.
+- While a dialog is open the page behind it stays still.
 - Every setting has an **i** button explaining what it changes.
 - Sensible defaults for a normal HDR AVIF; every knob is optional.
 - JPEG, PNG or WebP output with an optional size limit. JPEG is 8-bit sRGB with

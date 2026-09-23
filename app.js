@@ -874,25 +874,65 @@ async function commitAdjust() {
   }
 }
 
+/* ------------------------------------------------------------ modal dialogs */
+
+/**
+ * Opens a dialog modally and stops the page behind it from scrolling.
+ *
+ * A modal dialog makes the page inert but not still: a wheel or touch scroll
+ * that starts on the backdrop, or runs past the end of the dialog, still moves
+ * the document underneath. The lock is `overflow: hidden` on the root (see
+ * `html.scroll-locked`), which keeps the scroll position where it was. Hiding
+ * a classic scrollbar widens the page, so its width is held as padding to stop
+ * everything shifting sideways; overlay scrollbars measure 0 and need none.
+ */
+function openModal(dialog) {
+  const root = document.documentElement;
+  if (!root.classList.contains("scroll-locked")) {
+    const gap = Math.max(0, window.innerWidth - root.clientWidth);
+    root.style.setProperty("--scrollbar-gap", `${gap}px`);
+    root.classList.add("scroll-locked");
+  }
+  dialog.showModal();
+}
+
+/** Releases the lock once no dialog is left open, however the last one closed. */
+function releaseScrollLock() {
+  if (document.querySelector("dialog[open]")) return;
+  const root = document.documentElement;
+  root.classList.remove("scroll-locked");
+  root.style.removeProperty("--scrollbar-gap");
+}
+
 /* --------------------------------------------------------------- comparison */
 
 /**
- * Renders the same framing the result uses from the browser's own rendering of
- * the source file, so the two halves of the comparison line up.
+ * Paints the before side of the comparison from the browser's own rendering
+ * of the source file, in the same framing as the result, so the halves line up.
  *
  * That rendering is exactly what the user already sees everywhere else: the
  * HDR file squashed into SDR by the display pipeline, which is the thing the
  * conversion is meant to improve on.
+ *
+ * It is drawn straight into the canvas the dialog shows, and kept until the
+ * result changes. It used to be encoded into a PNG data URL on every open —
+ * 7 MB of text for a 2560×1440 image, with the page frozen for 300–800 ms
+ * each time before the dialog could appear.
  */
-function buildBeforeImage(item) {
+let beforePaintedFor = null;
+
+function paintBeforeImage(item) {
+  // Keyed on the result's object URL, which is new for every conversion, so
+  // this never holds on to a result that has since been replaced or cleared.
+  if (beforePaintedFor === item.resultUrl) return;
   const crop = normalizeCrop(item.source, item.crop);
   const target = item.result.canvas;
-  const canvas = document.createElement("canvas");
+  const canvas = elements.compareBefore;
+  const image = elements.sourceImage;
   canvas.width = target.width;
   canvas.height = target.height;
-  const context = canvas.getContext("2d");
-  context.drawImage(
-    elements.sourceImage,
+  canvas.getContext("2d").drawImage(
+    image,
     crop.x,
     crop.y,
     crop.width,
@@ -902,13 +942,26 @@ function buildBeforeImage(item) {
     canvas.width,
     canvas.height
   );
-  return canvas.toDataURL("image/png");
+  // Only remembered when the source had actually loaded, so an early open is
+  // redrawn next time rather than left blank.
+  beforePaintedFor = image.complete && image.naturalWidth ? item.resultUrl : null;
 }
 
+/** The wipe position, 0–100. */
+let wipePercent = 50;
+
+/**
+ * Moves the wipe. Writes a single number: the transforms that place the three
+ * wipe layers are computed from it in CSS, and moving composited layers needs
+ * no layout or paint, so this is cheap enough to run on every pointer event.
+ */
 function setWipe(percent) {
-  const clamped = Math.min(100, Math.max(0, percent));
-  elements.compareViewport.style.setProperty("--wipe", `${clamped}%`);
-  elements.compareDivider.setAttribute("aria-valuenow", String(Math.round(clamped)));
+  wipePercent = Math.min(100, Math.max(0, percent));
+  elements.compareViewport.style.setProperty("--wipe", String(wipePercent / 100));
+  const rounded = String(Math.round(wipePercent));
+  if (elements.compareDivider.getAttribute("aria-valuenow") !== rounded) {
+    elements.compareDivider.setAttribute("aria-valuenow", rounded);
+  }
 }
 
 function openCompare() {
@@ -916,33 +969,25 @@ function openCompare() {
   if (!item?.result) return;
   elements.compareAfter.src = item.resultUrl;
   elements.compareAfter.alt = translate("COMPARE_AFTER");
-  elements.compareBefore.src = buildBeforeImage(item);
-  elements.compareBefore.alt = translate("COMPARE_BEFORE");
+  paintBeforeImage(item);
+  elements.compareBefore.setAttribute("aria-label", translate("COMPARE_BEFORE"));
   setWipe(50);
-  elements.compareDialog.showModal();
+  openModal(elements.compareDialog);
 }
 
 /**
  * Drag state for the compare wipe.
  *
- * The viewport rectangle is read once per drag rather than per move: reading
- * it back mid-gesture forces a synchronous layout on every event, which is
- * what makes the divider stutter on a phone, where moves arrive far faster
- * than frames. Moves only record a position and a single rAF applies it, so a
- * burst of coalesced touch events costs one style write.
+ * Moves are applied as they arrive rather than batched into an animation
+ * frame: `setWipe` is too cheap to be worth deferring, and deferring can only
+ * add latency. The viewport rectangle is read once per drag, because reading
+ * it on every move would force a synchronous layout per event.
  */
 let wipeDrag = null;
 
-function applyWipe() {
-  if (!wipeDrag) return;
-  wipeDrag.frame = 0;
-  setWipe(((wipeDrag.clientX - wipeDrag.rect.left) / wipeDrag.rect.width) * 100);
-}
-
-function wipeFromPointer(event) {
-  if (!wipeDrag) return;
-  wipeDrag.clientX = event.clientX;
-  if (!wipeDrag.frame) wipeDrag.frame = requestAnimationFrame(applyWipe);
+function wipeTo(clientX) {
+  const { left, width } = wipeDrag.rect;
+  setWipe(((clientX - left) / width) * 100);
 }
 
 function beginWipe(event) {
@@ -950,14 +995,11 @@ function beginWipe(event) {
   // A second finger during a pinch would otherwise yank the divider across.
   if (wipeDrag) return;
   event.preventDefault();
-  elements.compareDivider.focus();
+  // Plain focus() can scroll the dialog to bring the whole divider into view,
+  // which jolts the picture just as the drag starts.
+  elements.compareDivider.focus({ preventScroll: true });
 
-  wipeDrag = {
-    pointerId: event.pointerId,
-    rect: elements.compareViewport.getBoundingClientRect(),
-    clientX: event.clientX,
-    frame: 0
-  };
+  wipeDrag = { pointerId: event.pointerId, rect: elements.compareViewport.getBoundingClientRect() };
   // Capture keeps the drag alive when the finger leaves the viewport and
   // guarantees the matching pointerup even if it lands off-element. It throws
   // when the id is not an active pointer, and the window listeners below
@@ -967,15 +1009,13 @@ function beginWipe(event) {
   } catch {
     /* not capturable; the drag still works through the window listeners */
   }
-  applyWipe();
+  wipeTo(event.clientX);
 
   const move = (moveEvent) => {
-    if (moveEvent.pointerId !== wipeDrag?.pointerId) return;
-    wipeFromPointer(moveEvent);
+    if (moveEvent.pointerId === wipeDrag?.pointerId) wipeTo(moveEvent.clientX);
   };
   const stop = (endEvent) => {
     if (!wipeDrag || (endEvent && endEvent.pointerId !== wipeDrag.pointerId)) return;
-    if (wipeDrag.frame) cancelAnimationFrame(wipeDrag.frame);
     try {
       elements.compareViewport.releasePointerCapture?.(wipeDrag.pointerId);
     } catch {
@@ -996,9 +1036,8 @@ function beginWipe(event) {
 
 function nudgeWipe(event) {
   const step = event.shiftKey ? 10 : 2;
-  const current = Number(elements.compareDivider.getAttribute("aria-valuenow"));
-  if (event.key === "ArrowLeft") setWipe(current - step);
-  else if (event.key === "ArrowRight") setWipe(current + step);
+  if (event.key === "ArrowLeft") setWipe(wipePercent - step);
+  else if (event.key === "ArrowRight") setWipe(wipePercent + step);
   else if (event.key === "Home") setWipe(0);
   else if (event.key === "End") setWipe(100);
   else return;
@@ -1190,7 +1229,7 @@ for (const key of ["exposure", ...GRADE_KEYS]) {
 }
 
 elements.adjust.addEventListener("click", () => {
-  elements.adjustDialog.showModal();
+  openModal(elements.adjustDialog);
   // Seed from the current result so the dialog is never blank before the
   // first drag; afterwards every scrub keeps it in step.
   paintAdjustPreview(activeItem()?.result?.canvas);
@@ -1228,6 +1267,9 @@ document.addEventListener("mousedown", (event) => {
 });
 
 elements.compare.addEventListener("click", openCompare);
+for (const dialog of document.querySelectorAll("dialog")) {
+  dialog.addEventListener("close", releaseScrollLock);
+}
 elements.compareClose.addEventListener("click", () => elements.compareDialog.close());
 elements.compareViewport.addEventListener("pointerdown", beginWipe);
 elements.compareDivider.addEventListener("keydown", nudgeWipe);
