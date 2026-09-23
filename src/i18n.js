@@ -86,6 +86,16 @@ export const translations = {
     WHITES_LABEL: "White point",
     BLACKS_LABEL: "Black point",
     SATURATION_LABEL: "Saturation",
+    ADJUST_GROUP_LIGHT: "Light",
+    ADJUST_GROUP_COLOR: "Color",
+    ADJUST_GROUP_DETAIL: "Detail",
+    ADJUST_GROUP_EFFECTS: "Effects",
+    TEMPERATURE_LABEL: "Temperature",
+    TINT_LABEL: "Tint",
+    VIBRANCE_LABEL: "Vibrance",
+    CLARITY_LABEL: "Clarity",
+    SHARPNESS_LABEL: "Sharpness",
+    VIGNETTE_LABEL: "Vignette",
     COMPARE: "Compare with the original",
     COMPARE_TITLE: "Before and after",
     COMPARE_BEFORE: "Original (HDR)",
@@ -126,6 +136,18 @@ export const translations = {
       "Where black begins. Lowering it crushes the deepest tones to true black for a denser look; raising it fades them to grey, the way film does.",
     TIP_SATURATION:
       "How far colours sit from grey. 0 leaves the converted colours exactly as measured, which is the faithful result; move it only if you want a more or less vivid look.",
+    TIP_TEMPERATURE:
+      "White balance, as on a camera: right makes the light warmer and more golden, left cooler and bluer. Greys keep their brightness; only the colour of the light changes.",
+    TIP_TINT:
+      "Removes a green or magenta cast: right adds magenta, left adds green. Use it after Temperature when whites still look off.",
+    TIP_VIBRANCE:
+      "A gentler saturation: it lifts muted colours first and leaves vivid ones alone, so a dull sky gains colour before signs or skin tones turn garish. Left mutes the dull colours first.",
+    TIP_CLARITY:
+      "Local contrast in the midtones: brings out texture and depth without making blacks or whites harsher. Strong outlines are left alone, so it does not draw halos. Left softens the picture.",
+    TIP_SHARPNESS:
+      "Crisps fine edges, like a camera's sharpening, at the size of the downloaded file. Tiny differences are ignored so gradients and noise are not exaggerated. While you drag it is approximated; letting go shows the exact result.",
+    TIP_VIGNETTE:
+      "Left darkens the corners to draw the eye to the centre; right lightens them. The shape follows the frame, crop included.",
     TIP_MAXDIM:
       "Shrinks the result so the longest side fits this many pixels. The aspect ratio is always preserved.",
     DOWNLOAD_ALL: "Download all",
@@ -232,6 +254,16 @@ export const translations = {
     WHITES_LABEL: "Punto de blanco",
     BLACKS_LABEL: "Punto de negro",
     SATURATION_LABEL: "Saturación",
+    ADJUST_GROUP_LIGHT: "Luz",
+    ADJUST_GROUP_COLOR: "Color",
+    ADJUST_GROUP_DETAIL: "Detalle",
+    ADJUST_GROUP_EFFECTS: "Efectos",
+    TEMPERATURE_LABEL: "Temperatura",
+    TINT_LABEL: "Matiz",
+    VIBRANCE_LABEL: "Intensidad",
+    CLARITY_LABEL: "Claridad",
+    SHARPNESS_LABEL: "Nitidez",
+    VIGNETTE_LABEL: "Viñeta",
     COMPARE: "Comparar con la original",
     COMPARE_TITLE: "Antes y después",
     COMPARE_BEFORE: "Original (HDR)",
@@ -272,6 +304,18 @@ export const translations = {
       "Dónde empieza el negro. Bajarlo lleva los tonos más oscuros a negro puro y da una imagen más densa; subirlo los aclara hacia el gris, como hace el cine.",
     TIP_SATURATION:
       "Cuánto se alejan los colores del gris. En 0 se conservan los colores tal y como se han medido, que es el resultado fiel; muévelo solo si quieres un aspecto más o menos vivo.",
+    TIP_TEMPERATURE:
+      "Balance de blancos, como en una cámara: a la derecha la luz se vuelve más cálida y dorada, a la izquierda más fría y azulada. Los grises conservan su brillo; solo cambia el color de la luz.",
+    TIP_TINT:
+      "Elimina un tono verde o magenta: a la derecha añade magenta, a la izquierda verde. Úsalo después de la Temperatura si los blancos siguen sin verse neutros.",
+    TIP_VIBRANCE:
+      "Una saturación más suave: aviva primero los colores apagados y deja en paz los intensos, así un cielo gris gana color antes de que los carteles o la piel se vean chillones. A la izquierda apaga primero los colores más débiles.",
+    TIP_CLARITY:
+      "Contraste local en los tonos medios: resalta la textura y la profundidad sin endurecer los negros ni los blancos. Los contornos marcados no se tocan, así que no aparecen halos. A la izquierda suaviza la imagen.",
+    TIP_SHARPNESS:
+      "Define los bordes finos, como el enfoque de una cámara, al tamaño del archivo que descargas. Las diferencias diminutas se ignoran para no exagerar degradados ni ruido. Mientras arrastras se muestra aproximado; al soltar ves el resultado exacto.",
+    TIP_VIGNETTE:
+      "A la izquierda oscurece las esquinas para llevar la mirada al centro; a la derecha las aclara. La forma sigue el encuadre, recorte incluido.",
     TIP_MAXDIM:
       "Reduce el resultado para que el lado más largo quepa en estos píxeles. La proporción siempre se conserva.",
     DOWNLOAD_ALL: "Descargar todo",

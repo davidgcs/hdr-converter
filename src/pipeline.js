@@ -20,14 +20,22 @@ import {
   COLOR_PRIMARIES,
   LUMA_COEFFICIENTS,
   REFERENCE_WHITE,
-  delinearizeValue,
   hlgOotfFactor,
+  inverseEotfSrgb,
   linearizeValue,
   rgb2rgbMatrix,
   yuv2rgbMatrix
 } from "./colorspace.js";
 import { createCurve, tonemapPixel } from "./tonemap.js";
-import { GRADE_DEFAULTS, applyGrade, createGrade } from "./grade.js";
+import {
+  GRADE_DEFAULTS,
+  applyDetail,
+  applyGrade,
+  applyVignette,
+  createDetail,
+  createGrade,
+  whiteBalanceGains
+} from "./grade.js";
 import { encodePng16, resize16 } from "./png.js";
 
 export const DEFAULT_SETTINGS = Object.freeze({
@@ -413,6 +421,29 @@ function yieldToBrowser() {
 const ENCODED = new Float32Array(3);
 
 /**
+ * The sRGB transfer function tabulated, for the live preview only.
+ *
+ * Three powers per pixel were well over half the cost of a preview frame.
+ * Interpolated over 4096 steps the table is within about 0.005/255 of the
+ * exact curve — below what 8 bits can show — and the downloadable file is
+ * always encoded with the exact function, so it is unaffected.
+ */
+const SRGB_TABLE_SIZE = 4096;
+const SRGB_TABLE = (() => {
+  const table = new Float32Array(SRGB_TABLE_SIZE + 1);
+  for (let i = 0; i <= SRGB_TABLE_SIZE; i++) table[i] = inverseEotfSrgb(i / SRGB_TABLE_SIZE);
+  return table;
+})();
+
+function srgbPreview(value) {
+  if (!(value > 0)) return 0;
+  if (value >= 1) return 1;
+  const position = value * SRGB_TABLE_SIZE;
+  const index = position | 0;
+  return SRGB_TABLE[index] + (SRGB_TABLE[index + 1] - SRGB_TABLE[index]) * (position - index);
+}
+
+/**
  * Encodes one tone-mapped pixel with the SDR transfer function and writes it
  * out, applying the display-referred grade if there is one.
  *
@@ -421,12 +452,25 @@ const ENCODED = new Float32Array(3);
  *
  * `out16`, when given, receives the same pixel at 16 bits per channel for the
  * PNG encoder; both are rounded from the same float, so they never disagree
- * by more than the 8-bit rounding itself.
+ * by more than the 8-bit rounding itself. `u` and `v` are the pixel's place in
+ * the frame, 0..1, for the vignette.
  */
-function encodePixel(out, index, rgb, alpha, grade, out16) {
-  ENCODED[0] = delinearizeValue("iec61966-2-1", Math.min(rgb[0], 1));
-  ENCODED[1] = delinearizeValue("iec61966-2-1", Math.min(rgb[1], 1));
-  ENCODED[2] = delinearizeValue("iec61966-2-1", Math.min(rgb[2], 1));
+function encodePixel(out, index, rgb, alpha, grade, out16, u, v, preview = false) {
+  ENCODED[0] = Math.min(rgb[0], 1);
+  ENCODED[1] = Math.min(rgb[1], 1);
+  ENCODED[2] = Math.min(rgb[2], 1);
+  if (grade?.vignette) applyVignette(grade, ENCODED, u, v);
+  if (preview) {
+    ENCODED[0] = srgbPreview(ENCODED[0]);
+    ENCODED[1] = srgbPreview(ENCODED[1]);
+    ENCODED[2] = srgbPreview(ENCODED[2]);
+  } else {
+    // The exact curve, called directly: the same function delinearizeValue
+    // dispatches to, without comparing transfer names three times a pixel.
+    ENCODED[0] = inverseEotfSrgb(ENCODED[0]);
+    ENCODED[1] = inverseEotfSrgb(ENCODED[1]);
+    ENCODED[2] = inverseEotfSrgb(ENCODED[2]);
+  }
   if (grade) applyGrade(grade, ENCODED);
   const a = Math.min(Math.max(alpha, 0), 1);
   out[index] = Math.round(ENCODED[0] * 255);
@@ -508,7 +552,7 @@ export function prepareScene(source, settings, crop, { maxPixels = 2.2e6 } = {})
     }
   }
 
-  return { width, height, linear, alpha, scene, transfer, primaries, coeffs };
+  return { width, height, sourceWidth: area.width, sourceHeight: area.height, linear, alpha, scene, transfer, primaries, coeffs };
 }
 
 /**
@@ -522,7 +566,9 @@ export function renderPreview(prepared, settings) {
   const options = { ...DEFAULT_SETTINGS, ...settings };
   const { width, height, linear, alpha, scene, transfer, primaries, coeffs } = prepared;
   const gain = resolveAdaptation(options, scene, transfer) * Math.pow(2, options.exposure || 0);
-  const peak = Math.max(1, resolvePeak(options, scene, transfer) * gain);
+  const lightPeak = Math.max(1, resolvePeak(options, scene, transfer) * gain);
+  const balance = whiteBalanceGains(options);
+  const peak = balancedPeak(lightPeak, balance);
   const curve = createCurve(options.algorithm, options.param, peak, { hdr: isHdrTransfer(transfer) });
   const gamut = gamutFor(primaries);
   const isHlg = transfer === "hlg";
@@ -532,28 +578,61 @@ export function renderPreview(prepared, settings) {
   const out = output.data;
   const rgb = new Float32Array(3);
 
-  for (let i = 0, index = 0, p = 0; i < width * height; i++, index += 4, p += 3) {
-    let r = linear[p];
-    let g = linear[p + 1];
-    let b = linear[p + 2];
+  for (let y = 0, i = 0; y < height; y++) {
+    const v = (y + 0.5) / height;
+    for (let x = 0; x < width; x++, i++) {
+      const p = i * 3;
+      let r = linear[p];
+      let g = linear[p + 1];
+      let b = linear[p + 2];
 
-    if (isHlg) {
-      const factor = hlgOotfFactor(coeffs.cr * r + coeffs.cg * g + coeffs.cb * b, peak);
-      r *= factor;
-      g *= factor;
-      b *= factor;
+      if (isHlg) {
+        const factor = hlgOotfFactor(coeffs.cr * r + coeffs.cg * g + coeffs.cb * b, lightPeak);
+        r *= factor;
+        g *= factor;
+        b *= factor;
+      }
+
+      rgb[0] = r * gain;
+      rgb[1] = g * gain;
+      rgb[2] = b * gain;
+      toBt709(gamut, rgb);
+      if (balance) balanceWhite(rgb, balance);
+      tonemapPixel(rgb, curve, options.desat, coeffs);
+
+      encodePixel(out, i * 4, rgb, alpha[i], grade, null, (x + 0.5) / width, v, true);
     }
-
-    rgb[0] = r * gain;
-    rgb[1] = g * gain;
-    rgb[2] = b * gain;
-    toBt709(gamut, rgb);
-    tonemapPixel(rgb, curve, options.desat, coeffs);
-
-    encodePixel(out, index, rgb, alpha[i], grade);
   }
 
+  // Clarity and sharpness are defined on the saved file, so a reduced preview
+  // runs them at its own scale to look the way the file will.
+  const detail = createDetail(options);
+  if (detail) applyDetail(detail, out, null, width, height, width / outputSize(prepared, options).width);
+
   return output;
+}
+
+/** The size `encodeResult` will save a crop of this size at. */
+function outputSize({ sourceWidth, sourceHeight }, { maxDimension }) {
+  const longest = Math.max(sourceWidth, sourceHeight);
+  if (!maxDimension || longest <= maxDimension) return { width: sourceWidth, height: sourceHeight };
+  const scale = maxDimension / longest;
+  return { width: Math.max(1, Math.round(sourceWidth * scale)), height: Math.max(1, Math.round(sourceHeight * scale)) };
+}
+
+/**
+ * White balance can push one channel of the brightest pixel above the peak
+ * the scene was measured at; the tone curve is built around the larger value
+ * so it rolls that channel off rather than clipping it.
+ */
+function balancedPeak(peak, balance) {
+  return balance ? peak * Math.max(balance[0], balance[1], balance[2], 1) : peak;
+}
+
+function balanceWhite(rgb, balance) {
+  rgb[0] *= balance[0];
+  rgb[1] *= balance[1];
+  rgb[2] *= balance[2];
 }
 
 /**
@@ -578,7 +657,9 @@ export async function convert(source, settings, crop, { onProgress, signal, scen
   // Adaptation happens in linear light before the curve, so the peak the curve
   // is built around has to move with it.
   const gain = resolveAdaptation(options, scene, transfer) * Math.pow(2, options.exposure || 0);
-  const peak = Math.max(1, resolvePeak(options, scene, transfer) * gain);
+  const lightPeak = Math.max(1, resolvePeak(options, scene, transfer) * gain);
+  const balance = whiteBalanceGains(options);
+  const peak = balancedPeak(lightPeak, balance);
   const curve = createCurve(options.algorithm, options.param, peak, { hdr: isHdrTransfer(transfer) });
   const isHlg = transfer === "hlg";
   const grade = createGrade(options);
@@ -606,7 +687,7 @@ export async function convert(source, settings, crop, { onProgress, signal, scen
 
         // 2. HLG needs the OOTF to reach display light
         if (isHlg) {
-          const factor = hlgOotfFactor(coeffs.cr * r + coeffs.cg * g + coeffs.cb * b, peak);
+          const factor = hlgOotfFactor(coeffs.cr * r + coeffs.cg * g + coeffs.cb * b, lightPeak);
           r *= factor;
           g *= factor;
           b *= factor;
@@ -618,15 +699,16 @@ export async function convert(source, settings, crop, { onProgress, signal, scen
         rgb[2] = b * gain;
 
         // 4. gamut conversion (zscale=p=bt709), mapping rather than clipping
-        //    what BT.709 cannot show
+        //    what BT.709 cannot show, then white balance on that light
         toBt709(gamut, rgb);
+        if (balance) balanceWhite(rgb, balance);
 
         // 5. tone map (tonemap.js)
         tonemapPixel(rgb, curve, options.desat, coeffs);
 
         // 6. encode with the SDR transfer function, then the display-referred
         //    tonal controls, if the user has touched any (src/grade.js)
-        encodePixel(out, index, rgb, pixel[3], grade, out16);
+        encodePixel(out, index, rgb, pixel[3], grade, out16, (x + 0.5) / area.width, (y + 0.5) / area.height);
         index += 4;
       }
     }
@@ -707,13 +789,22 @@ export function canvasToBlob(canvas, format, quality) {
  */
 export async function encodeResult({ imageData, pixels16 }, settings) {
   const canvas = toCanvas(imageData, settings.maxDimension);
-  if (settings.outputFormat === "image/png" && pixels16) {
-    const resized =
-      canvas.width === imageData.width && canvas.height === imageData.height
-        ? pixels16
-        : resize16(pixels16, imageData.width, imageData.height, canvas.width, canvas.height);
-    return { canvas, blob: encodePng16(resized, canvas.width, canvas.height) };
+  const png = settings.outputFormat === "image/png" && pixels16;
+  const resized = png && (canvas.width !== imageData.width || canvas.height !== imageData.height)
+    ? resize16(pixels16, imageData.width, imageData.height, canvas.width, canvas.height)
+    : pixels16;
+
+  // Clarity and sharpness run last, on the image at the size it is saved at:
+  // sharpening before a downscale would mostly be averaged away again.
+  const detail = createDetail({ ...DEFAULT_SETTINGS, ...settings });
+  if (detail) {
+    const context = canvas.getContext("2d");
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+    applyDetail(detail, pixels.data, png ? resized : null, canvas.width, canvas.height);
+    context.putImageData(pixels, 0, 0);
   }
+
+  if (png) return { canvas, blob: encodePng16(resized, canvas.width, canvas.height) };
   return { canvas, blob: await canvasToBlob(canvas, settings.outputFormat, settings.quality) };
 }
 

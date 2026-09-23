@@ -82,6 +82,12 @@ const elements = {
   whites: document.querySelector("#whites"),
   blacks: document.querySelector("#blacks"),
   saturation: document.querySelector("#saturation"),
+  temperature: document.querySelector("#temperature"),
+  tint: document.querySelector("#tint"),
+  vibrance: document.querySelector("#vibrance"),
+  clarity: document.querySelector("#clarity"),
+  sharpness: document.querySelector("#sharpness"),
+  vignette: document.querySelector("#vignette"),
   maxDimension: document.querySelector("#max-dimension"),
   resetSettings: document.querySelector("#reset-settings")
 };
@@ -122,6 +128,12 @@ const TIPS = {
   whites: "TIP_WHITES",
   blacks: "TIP_BLACKS",
   saturation: "TIP_SATURATION",
+  temperature: "TIP_TEMPERATURE",
+  tint: "TIP_TINT",
+  vibrance: "TIP_VIBRANCE",
+  clarity: "TIP_CLARITY",
+  sharpness: "TIP_SHARPNESS",
+  vignette: "TIP_VIGNETTE",
   "max-dimension": "TIP_MAXDIM"
 };
 

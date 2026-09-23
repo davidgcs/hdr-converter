@@ -752,6 +752,22 @@ noscript {
   flex: none;
 }
 
+/* Section headings, so thirteen sliders read as four short groups. */
+.adjust-group {
+  margin: 4px 0 -6px;
+  color: #64748b;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.adjust-group:not(:first-child) {
+  margin-top: 6px;
+  padding-top: 14px;
+  border-top: 1px solid #e2e8f0;
+}
+
 .adjust-body .setting--range {
   grid-template-columns: minmax(0, 1fr) 4.5ch;
 }
@@ -1112,6 +1128,14 @@ html[data-theme="dark"] .adjust-note {
 
 html[data-theme="dark"] .adjust-body output {
   color: #e6edf3;
+}
+
+html[data-theme="dark"] .adjust-group {
+  color: #8c959f;
+}
+
+html[data-theme="dark"] .adjust-group:not(:first-child) {
+  border-color: #30363d;
 }
 
 html[data-theme="dark"] .link-button {

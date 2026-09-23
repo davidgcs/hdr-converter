@@ -1,20 +1,30 @@
 /**
- * Display-referred tonal controls.
+ * The adjust panel's controls.
  *
- * These run *after* tone mapping, on the sRGB-encoded signal, because that is
- * the domain they are named for: "shadows", "highlights" and a black point are
- * statements about where tones land on the final display, not about scene
- * light. Exposure is the exception and stays in linear light ahead of the tone
- * curve (see pipeline.js), where a stop is a stop.
+ * They act at three points in the pipeline, each where its name makes sense:
  *
- * Every control is neutral at 0, and `createGrade` returns null when they all
- * are, so an unedited conversion runs exactly the code it did before this
- * module existed and produces identical bytes.
+ *  - White balance (temperature, tint) is light, like exposure, so it runs in
+ *    linear light ahead of the tone curve: `whiteBalanceGains`.
+ *  - The tonal and colour controls are statements about where tones land on
+ *    the final display — "shadows", a black point, how vivid a colour looks —
+ *    so they run after tone mapping, on the sRGB-encoded signal: `createGrade`
+ *    and `applyGrade`. The vignette runs just before, on linear display light,
+ *    because darkening a corner is a change in how much light it gives off.
+ *  - Clarity and sharpness look at neighbouring pixels, so they run last, over
+ *    the finished image at the size it is saved at: `createDetail` and
+ *    `applyDetail`.
  *
- * The curve is monotonic across the whole parameter space, so no combination
- * of settings can invert tones or posterise a gradient. See the constants
- * below for why the amplitudes are what they are.
+ * Every control is neutral at 0, and each stage is skipped outright (its
+ * factory returns null) when all of its controls are, so an unedited
+ * conversion runs exactly the code it did before this module existed and
+ * produces identical bytes.
+ *
+ * The tone curve is monotonic across the whole parameter space, so no
+ * combination of settings can invert tones or posterise a gradient. See the
+ * constants below for why the amplitudes are what they are.
  */
+
+import { COLOR_PRIMARIES, invert3x3, rgb2xyzMatrix } from "./colorspace.js";
 
 const LUT_SIZE = 1024;
 
@@ -29,11 +39,29 @@ export const GRADE_DEFAULTS = Object.freeze({
   whites: 0,
   /** Input black point, -100..100. */
   blacks: 0,
+  /** White balance along the blackbody locus, cool..warm, -100..100. */
+  temperature: 0,
+  /** White balance across it, green..magenta, -100..100. */
+  tint: 0,
+  /** Saturation weighted toward muted colours, -100..100. */
+  vibrance: 0,
   /** Distance from grey, -100..100. */
-  saturation: 0
+  saturation: 0,
+  /** Edge-aware local contrast in the midtones, -100..100. */
+  clarity: 0,
+  /** Unsharp mask at the saved resolution, 0..100. */
+  sharpness: 0,
+  /** Darker (-) or lighter (+) corners, -100..100. */
+  vignette: 0
 });
 
 export const GRADE_KEYS = Object.freeze(Object.keys(GRADE_DEFAULTS));
+
+const CURVE_KEYS = ["contrast", "highlights", "shadows", "whites", "blacks"];
+
+function amount(options, key, min = -1) {
+  return Math.max(min, Math.min(1, Number(options[key]) / 100 || 0));
+}
 
 /**
  * `x^2 (1-x)^6` peaks at x = 0.25 and `x^6 (1-x)^2` at x = 0.75, both reaching
@@ -85,8 +113,25 @@ function inverseSmoothstep(x) {
   return 0.5 - Math.sin(Math.asin(1 - 2 * x) / 3);
 }
 
-function isNeutral(options) {
-  return GRADE_KEYS.every((key) => !Number(options[key]));
+/**
+ * The display-referred part of the grade: tone curve, vibrance, saturation
+ * and vignette.
+ *
+ * @returns {{lut: Float32Array|null, saturation: number, vibrance: number,
+ *   vignette: number} | null} null when nothing would change, so callers can
+ *   skip the work entirely.
+ */
+export function createGrade(settings) {
+  const options = { ...GRADE_DEFAULTS, ...settings };
+  const saturation = amount(options, "saturation");
+  const vibrance = amount(options, "vibrance");
+  const vignette = amount(options, "vignette");
+  const curved = CURVE_KEYS.some((key) => Number(options[key]));
+  if (!curved && !saturation && !vibrance && !vignette) return null;
+  // No table at all when only the colour controls moved, so the tones pass
+  // through untouched rather than through an identity curve.
+  const lut = curved ? buildCurve(options) : null;
+  return { lut, saturation, vibrance, vignette };
 }
 
 /**
@@ -95,14 +140,8 @@ function isNeutral(options) {
  * Order follows the usual editing order: contrast sets the overall shape,
  * the weighted controls recover what that cost at either end, and the black
  * and white points trim the result to the range that will be displayed.
- *
- * @returns {{lut: Float32Array, saturation: number} | null} null when nothing
- *   would change, so callers can skip the work entirely.
  */
-export function createGrade(settings) {
-  const options = { ...GRADE_DEFAULTS, ...settings };
-  if (isNeutral(options)) return null;
-
+function buildCurve(options) {
   const contrast = Math.max(-1, Math.min(1, Number(options.contrast) / 100));
   const highlights = Math.max(-1, Math.min(1, Number(options.highlights) / 100));
   const shadows = Math.max(-1, Math.min(1, Number(options.shadows) / 100));
@@ -125,7 +164,7 @@ export function createGrade(settings) {
     lut[i] = x < 0 ? 0 : x > 1 ? 1 : x;
   }
 
-  return { lut, saturation: Math.max(-1, Math.min(1, Number(options.saturation) / 100)) };
+  return lut;
 }
 
 function lookup(lut, value) {
@@ -143,17 +182,35 @@ function lookup(lut, value) {
  * The curve runs per channel. A monotonic per-channel curve cannot reorder the
  * channels, so it cannot invert a hue, and it is what every editor's contrast
  * and levels controls do — lifting the black point fades the shadows the way
- * users expect it to. Saturation is applied afterwards around the graded
- * luminance, which is how to put back any change in vividness the tone curve
- * brought with it.
+ * users expect it to. Vibrance and saturation are applied afterwards around
+ * the graded luminance, which is how to put back any change in vividness the
+ * tone curve brought with it.
  *
- * @param {{lut: Float32Array, saturation: number}} grade
+ * @param {{lut: Float32Array|null, saturation: number, vibrance: number}} grade
  * @param {Float32Array} rgb Encoded 0..1 values, overwritten with the result.
  */
 export function applyGrade(grade, rgb) {
-  let r = lookup(grade.lut, rgb[0]);
-  let g = lookup(grade.lut, rgb[1]);
-  let b = lookup(grade.lut, rgb[2]);
+  let r = rgb[0];
+  let g = rgb[1];
+  let b = rgb[2];
+  if (grade.lut) {
+    r = lookup(grade.lut, r);
+    g = lookup(grade.lut, g);
+    b = lookup(grade.lut, b);
+  }
+
+  if (grade.vibrance) {
+    // Weighted by how muted the colour already is (1 - HSV saturation), so a
+    // dull sky gains colour long before a vivid sign turns garish. Negative
+    // values mute the dull colours first and leave the vivid ones.
+    const max = Math.max(r, g, b);
+    const muted = max > 1e-6 ? 1 - (max - Math.min(r, g, b)) / max : 1;
+    const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    const scale = 1 + grade.vibrance * muted;
+    r = luma + (r - luma) * scale;
+    g = luma + (g - luma) * scale;
+    b = luma + (b - luma) * scale;
+  }
 
   if (grade.saturation) {
     const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
@@ -166,4 +223,393 @@ export function applyGrade(grade, rgb) {
   rgb[0] = r < 0 ? 0 : r > 1 ? 1 : r;
   rgb[1] = g < 0 ? 0 : g > 1 ? 1 : g;
   rgb[2] = b < 0 ? 0 : b > 1 ? 1 : b;
+}
+
+/* ------------------------------------------------------------- vignette */
+
+/** Where the falloff starts, as a fraction of the centre-to-corner distance. */
+const VIGNETTE_START = 0.3;
+/** At -100 the corners give off a fifth of their light (about -2.3 stops). */
+const VIGNETTE_DEPTH = 0.8;
+
+/**
+ * Darkens (negative) or lightens (positive) the edges of one pixel of linear
+ * display light, in place. `u` and `v` are its position in the frame, 0..1,
+ * so the falloff follows the frame's own shape — crop included — and looks
+ * the same at any resolution.
+ */
+export function applyVignette(grade, rgb, u, v) {
+  const dx = 2 * u - 1;
+  const dy = 2 * v - 1;
+  const d = Math.sqrt((dx * dx + dy * dy) / 2);
+  if (d <= VIGNETTE_START) return;
+  const t = Math.min(1, (d - VIGNETTE_START) / (1 - VIGNETTE_START));
+  const falloff = t * t * (3 - 2 * t) * VIGNETTE_DEPTH * grade.vignette;
+  if (falloff < 0) {
+    // Less light from the corners, as a lens gives.
+    const keep = 1 + falloff;
+    rgb[0] *= keep;
+    rgb[1] *= keep;
+    rgb[2] *= keep;
+  } else {
+    // A light vignette mixes toward white instead: multiplying would clip.
+    rgb[0] += (1 - rgb[0]) * falloff;
+    rgb[1] += (1 - rgb[1]) * falloff;
+    rgb[2] += (1 - rgb[2]) * falloff;
+  }
+}
+
+/* -------------------------------------------------------- white balance */
+
+const XYZ_TO_BT709 = invert3x3(rgb2xyzMatrix(COLOR_PRIMARIES.bt709));
+
+/** D65's correlated colour temperature: the neutral end of the slider. */
+const NEUTRAL_CCT = 6504;
+/**
+ * ±100 on the slider moves the white point ±50 mired along the blackbody
+ * locus (to 9640 K / 4910 K). Mired, 10^6/K, is the scale on which equal steps
+ * look like equal shifts, which is why camera filters are rated in it.
+ */
+const MIRED_SPAN = 50;
+/** ±100 of tint scales green by ∓20% before normalising. */
+const TINT_SPAN = 0.2;
+
+/** Kim et al. (2002) cubic fit to the Planckian locus, 1667–25000 K, CIE 1931 xy. */
+function planckianXY(kelvin) {
+  const t = 1e3 / kelvin;
+  const t2 = t * t;
+  const t3 = t2 * t;
+  const x = kelvin <= 4000
+    ? -0.2661239 * t3 - 0.2343589 * t2 + 0.8776956 * t + 0.17991
+    : -3.0258469 * t3 + 2.1070379 * t2 + 0.2226347 * t + 0.24039;
+  const x2 = x * x;
+  const x3 = x2 * x;
+  const y = kelvin <= 2222
+    ? -1.1063814 * x3 - 1.3481102 * x2 + 2.18555832 * x - 0.20219683
+    : kelvin <= 4000
+      ? -0.9549476 * x3 - 1.37418593 * x2 + 2.09137015 * x - 0.16748867
+      : 3.081758 * x3 - 5.8733867 * x2 + 3.75112997 * x - 0.37001483;
+  return [x, y];
+}
+
+/** Linear BT.709 RGB of the blackbody white at `kelvin`, luminance 1. */
+function blackbodyRgb(kelvin) {
+  const [x, y] = planckianXY(kelvin);
+  const X = x / y;
+  const Z = (1 - x - y) / y;
+  return XYZ_TO_BT709.map((row) => row[0] * X + row[1] + row[2] * Z);
+}
+
+/**
+ * Per-channel gains for linear BT.709 light, or null when white balance is
+ * untouched.
+ *
+ * Temperature treats the picture as if it had been lit by a blackbody warmer
+ * or cooler than D65 and corrects for it, von Kries style: dividing by a
+ * bluish white warms the picture, dividing by a yellowish one cools it. Both
+ * whites are taken from the same locus fit, so at 0 the gains are exactly 1.
+ * The gains are then normalised so a neutral grey keeps its luminance: white
+ * balance changes the colour of the light, not how much there is of it.
+ */
+export function whiteBalanceGains(settings) {
+  const options = { ...GRADE_DEFAULTS, ...settings };
+  const temperature = amount(options, "temperature");
+  const tint = amount(options, "tint");
+  if (!temperature && !tint) return null;
+
+  const neutral = blackbodyRgb(NEUTRAL_CCT);
+  const target = blackbodyRgb(1e6 / (1e6 / NEUTRAL_CCT - temperature * MIRED_SPAN));
+  const gains = neutral.map((value, i) => value / target[i]);
+  gains[1] *= 1 - tint * TINT_SPAN;
+  const luminance = 0.2126 * gains[0] + 0.7152 * gains[1] + 0.0722 * gains[2];
+  return Float32Array.from(gains, (gain) => gain / luminance);
+}
+
+/* --------------------------------------------------------------- detail */
+
+/**
+ * Unsharp mask: sigma in pixels of the saved file, and the strength at 100.
+ * The radius is set by the output so the look does not depend on how large
+ * the preview happens to be.
+ */
+const SHARP_SIGMA = 1;
+const SHARP_MAX = 1.5;
+/**
+ * Differences below this, in encoded units, are not sharpened at all, and the
+ * mask ramps up to full strength over the next step. It keeps the 8-bit steps
+ * of a smooth dark gradient, and fine noise, from being turned into texture.
+ */
+const SHARP_THRESHOLD = 0.5 / 255;
+const SHARP_RAMP = 1 / 255;
+
+/** Clarity's radius as a fraction of the image diagonal: a local, not global, contrast. */
+const CLARITY_RADIUS = 0.012;
+/**
+ * The guided filter's regulariser. Neighbourhoods whose local contrast is well
+ * above sqrt(eps) = 0.1 count as edges and are left as they are, which is
+ * what keeps clarity from drawing halos along strong outlines.
+ */
+const CLARITY_EPS = 0.01;
+const CLARITY_MAX = 1;
+
+/**
+ * Scratch space reused from one call to the next. The live preview runs the
+ * detail pass on every frame of a drag, and allocating fresh multi-megabyte
+ * buffers each time leaves the garbage collector a frame's worth of work.
+ *
+ * Only preview-sized buffers are kept (previews are capped at 2.2 MP, see
+ * prepareScene). A full-size save allocates its own and lets them go, so a
+ * large photo does not leave hundreds of megabytes behind.
+ */
+const SCRATCH_LIMIT = 2.5e6;
+const scratch = new Map();
+function buffer(name, length) {
+  if (length > SCRATCH_LIMIT) return new Float32Array(length);
+  let array = scratch.get(name);
+  if (!array || array.length < length) {
+    array = new Float32Array(length);
+    scratch.set(name, array);
+  }
+  return array;
+}
+
+/** @returns {{sharpness: number, clarity: number} | null} */
+export function createDetail(settings) {
+  const options = { ...GRADE_DEFAULTS, ...settings };
+  const sharpness = amount(options, "sharpness", 0);
+  const clarity = amount(options, "clarity");
+  return sharpness || clarity ? { sharpness, clarity } : null;
+}
+
+/**
+ * Horizontal then vertical pass of a normalised, edge-clamped Gaussian. Only
+ * the few pixels within `radius` of an edge need clamping; the rest run a
+ * plain dot product.
+ */
+function gaussianBlur(src, width, height, sigma) {
+  const radius = Math.max(1, Math.ceil(sigma * 3));
+  const taps = radius * 2 + 1;
+  const kernel = new Float32Array(taps);
+  let total = 0;
+  for (let i = -radius; i <= radius; i++) {
+    const w = Math.exp(-(i * i) / (2 * sigma * sigma));
+    kernel[i + radius] = w;
+    total += w;
+  }
+  for (let i = 0; i < taps; i++) kernel[i] /= total;
+
+  const n = width * height;
+  const temp = buffer("blur-temp", n);
+  const out = buffer("blur-out", n);
+  const clampX = (x) => (x < 0 ? 0 : x >= width ? width - 1 : x);
+  const clampY = (y) => (y < 0 ? 0 : y >= height ? height - 1 : y);
+
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      let sum = 0;
+      if (x >= radius && x < width - radius) {
+        const start = row + x - radius;
+        for (let k = 0; k < taps; k++) sum += src[start + k] * kernel[k];
+      } else {
+        for (let k = 0; k < taps; k++) sum += src[row + clampX(x + k - radius)] * kernel[k];
+      }
+      temp[row + x] = sum;
+    }
+  }
+  for (let y = 0; y < height; y++) {
+    const interior = y >= radius && y < height - radius;
+    for (let x = 0; x < width; x++) {
+      let sum = 0;
+      if (interior) {
+        let at = (y - radius) * width + x;
+        for (let k = 0; k < taps; k++, at += width) sum += temp[at] * kernel[k];
+      } else {
+        for (let k = 0; k < taps; k++) sum += temp[clampY(y + k - radius) * width + x] * kernel[k];
+      }
+      out[y * width + x] = sum;
+    }
+  }
+  return out;
+}
+
+/** Mean over a (2r+1)² window, via running sums; windows shrink at the edges. */
+function boxMean(src, width, height, r) {
+  const temp = new Float32Array(src.length);
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    let sum = 0;
+    for (let x = 0; x < Math.min(r, width - 1) + 1; x++) sum += src[row + x];
+    for (let x = 0; x < width; x++) {
+      const lo = Math.max(0, x - r);
+      const hi = Math.min(width - 1, x + r);
+      temp[row + x] = sum / (hi - lo + 1);
+      if (x + r + 1 < width) sum += src[row + x + r + 1];
+      if (x - r >= 0) sum -= src[row + x - r];
+    }
+  }
+  const out = new Float32Array(src.length);
+  for (let x = 0; x < width; x++) {
+    let sum = 0;
+    for (let y = 0; y < Math.min(r, height - 1) + 1; y++) sum += temp[y * width + x];
+    for (let y = 0; y < height; y++) {
+      const lo = Math.max(0, y - r);
+      const hi = Math.min(height - 1, y + r);
+      out[y * width + x] = sum / (hi - lo + 1);
+      if (y + r + 1 < height) sum += temp[(y + r + 1) * width + x];
+      if (y - r >= 0) sum -= temp[(y - r) * width + x];
+    }
+  }
+  return out;
+}
+
+/**
+ * The fast guided filter (He & Sun, 2015) of `luma` guided by itself: an
+ * edge-preserving base layer, from which clarity takes the detail.
+ *
+ * The coefficients are solved on a copy shrunk by `step` and interpolated
+ * back up, which for a radius this large is indistinguishable from the full
+ * filter and far cheaper. The step is chosen so the shrunk radius is always
+ * about 4 pixels, so a half-size preview and the full-size file solve the
+ * same small problem and agree.
+ */
+function guidedBase(luma, width, height) {
+  const radius = Math.max(2, Math.round(CLARITY_RADIUS * Math.hypot(width, height)));
+  const step = Math.max(1, Math.floor(radius / 4));
+  const w = Math.max(1, Math.ceil(width / step));
+  const h = Math.max(1, Math.ceil(height / step));
+  const r = Math.max(1, Math.round(radius / step));
+
+  const small = new Float32Array(w * h);
+  const squares = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let sum = 0;
+      let sum2 = 0;
+      let count = 0;
+      for (let yy = y * step; yy < Math.min(height, (y + 1) * step); yy++) {
+        for (let xx = x * step; xx < Math.min(width, (x + 1) * step); xx++) {
+          const value = luma[yy * width + xx];
+          sum += value;
+          sum2 += value * value;
+          count++;
+        }
+      }
+      small[y * w + x] = sum / count;
+      squares[y * w + x] = sum2 / count;
+    }
+  }
+
+  const mean = boxMean(small, w, h, r);
+  const meanSquares = boxMean(squares, w, h, r);
+  const a = new Float32Array(w * h);
+  const b = new Float32Array(w * h);
+  for (let i = 0; i < a.length; i++) {
+    const variance = Math.max(0, meanSquares[i] - mean[i] * mean[i]);
+    a[i] = variance / (variance + CLARITY_EPS);
+    b[i] = mean[i] - a[i] * mean[i];
+  }
+  return { a: boxMean(a, w, h, r), b: boxMean(b, w, h, r), w, h, step };
+}
+
+/**
+ * Where full-resolution pixel `i` falls between two samples of a map shrunk
+ * by `step`: the lower index, the upper one, and the weight of the upper.
+ */
+function upsampleAxis(size, small, step) {
+  const lower = new Int32Array(size);
+  const upper = new Int32Array(size);
+  const weight = new Float32Array(size);
+  for (let i = 0; i < size; i++) {
+    const f = Math.min(small - 1, Math.max(0, (i + 0.5) / step - 0.5));
+    lower[i] = f | 0;
+    upper[i] = Math.min(small - 1, lower[i] + 1);
+    weight[i] = f - lower[i];
+  }
+  return { lower, upper, weight };
+}
+
+/**
+ * Applies clarity and sharpness to a finished image, in place.
+ *
+ * Both work on luminance, as editors do, and add the same amount to all three
+ * channels, which changes brightness locally without shifting colour or
+ * drawing coloured fringes. They share one pass over the untouched luminance,
+ * so neither sharpens the other's result.
+ *
+ * @param {{sharpness: number, clarity: number}} detail from `createDetail`
+ * @param {Uint8ClampedArray} data8 RGBA, always updated
+ * @param {Uint16Array|null} data16 RGBA; when given it is updated too, and
+ *   the luminance is read from it, at full precision
+ * @param {number} scale pixels of this image per pixel of the saved file:
+ *   below 1 for a reduced live preview, so the sharpening radius shrinks
+ *   with it and the preview approximates the file
+ */
+export function applyDetail(detail, data8, data16, width, height, scale = 1) {
+  const n = width * height;
+  const luma = buffer("luma", n);
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    luma[i] = data16
+      ? (0.2126 * data16[p] + 0.7152 * data16[p + 1] + 0.0722 * data16[p + 2]) / 65535
+      : (0.2126 * data8[p] + 0.7152 * data8[p + 1] + 0.0722 * data8[p + 2]) / 255;
+  }
+
+  const blurred = detail.sharpness ? gaussianBlur(luma, width, height, Math.max(0.3, SHARP_SIGMA * scale)) : null;
+  const base = detail.clarity ? guidedBase(luma, width, height) : null;
+  const sharpen = detail.sharpness * SHARP_MAX;
+  const clarity = detail.clarity * CLARITY_MAX;
+
+  const across = base && upsampleAxis(width, base.w, base.step);
+  const down = base && upsampleAxis(height, base.h, base.step);
+
+  for (let y = 0, i = 0; y < height; y++) {
+    let top = 0;
+    let bottom = 0;
+    let ty = 0;
+    if (base) {
+      top = down.lower[y] * base.w;
+      bottom = down.upper[y] * base.w;
+      ty = down.weight[y];
+    }
+    for (let x = 0; x < width; x++, i++) {
+      const value = luma[i];
+      let delta = 0;
+      if (blurred) {
+        const d = value - blurred[i];
+        const magnitude = d < 0 ? -d : d;
+        if (magnitude > SHARP_THRESHOLD) {
+          const t = Math.min(1, (magnitude - SHARP_THRESHOLD) / SHARP_RAMP);
+          delta += sharpen * d * t * t * (3 - 2 * t);
+        }
+      }
+      if (base) {
+        const x0 = across.lower[x];
+        const x1 = across.upper[x];
+        const tx = across.weight[x];
+        const { a, b } = base;
+        const aTop = a[top + x0] + (a[top + x1] - a[top + x0]) * tx;
+        const aBottom = a[bottom + x0] + (a[bottom + x1] - a[bottom + x0]) * tx;
+        const bTop = b[top + x0] + (b[top + x1] - b[top + x0]) * tx;
+        const bBottom = b[bottom + x0] + (b[bottom + x1] - b[bottom + x0]) * tx;
+        const q = (aTop + (aBottom - aTop) * ty) * value + bTop + (bBottom - bTop) * ty;
+        // Weighted toward the midtones, so blacks do not crush and whites do
+        // not clip as local contrast rises.
+        const mid = 1 - (2 * value - 1) * (2 * value - 1);
+        delta += clarity * (value - q) * mid;
+      }
+      if (!delta) continue;
+      const p = i * 4;
+      const d8 = delta * 255;
+      data8[p] += d8;
+      data8[p + 1] += d8;
+      data8[p + 2] += d8;
+      if (data16) {
+        const d16 = delta * 65535;
+        for (let c = 0; c < 3; c++) {
+          const next = Math.round(data16[p + c] + d16);
+          data16[p + c] = next < 0 ? 0 : next > 65535 ? 65535 : next;
+        }
+      }
+    }
+  }
 }
