@@ -49,6 +49,7 @@ const elements = {
   adjustDialog: document.querySelector("#adjust-dialog"),
   adjustClose: document.querySelector("#adjust-close"),
   adjustReset: document.querySelector("#adjust-reset"),
+  adjustCanvas: document.querySelector("#adjust-canvas"),
   compare: document.querySelector("#compare"),
   compareDialog: document.querySelector("#compare-dialog"),
   compareClose: document.querySelector("#compare-close"),
@@ -761,6 +762,31 @@ let scrubFrame = 0;
  * function is cached by `prepareScene` — so dragging any of the adjust sliders
  * stays interactive even on a full-resolution image.
  */
+/**
+ * Mirrors a preview frame into the dialog, so the sliders can be judged
+ * against the picture rather than by their numbers.
+ *
+ * `source` is whatever already holds the current pixels — the ImageData a
+ * scrub just produced, or the result canvas when the dialog opens — so the
+ * dialog never runs the pipeline itself and cannot disagree with the pane.
+ */
+function paintAdjustPreview(source) {
+  const canvas = elements.adjustCanvas;
+  if (!source) return;
+
+  const width = source.width;
+  const height = source.height;
+  if (!width || !height) return;
+
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  const context = canvas.getContext("2d");
+  if (source instanceof ImageData) context.putImageData(source, 0, 0);
+  else context.drawImage(source, 0, 0);
+}
+
 function scrubAdjust() {
   updateSettingVisibility();
 
@@ -778,13 +804,31 @@ function scrubAdjust() {
     // Swap the encoded file out for the live canvas only while scrubbing.
     canvas.hidden = false;
     elements.resultImage.hidden = true;
+    paintAdjustPreview(imageData);
   });
 }
 
 /** Re-encodes the active item so the preview is a real file again. */
+/**
+ * Re-encodes the active item so the preview is a real file again.
+ *
+ * Edits can arrive faster than a full-resolution encode takes — a
+ * double-click reset lands two in a row, since the first press moves the
+ * slider before the second one resets it. Dropping the later edit would leave
+ * the file showing a value the controls no longer say, so an edit that
+ * arrives mid-encode is remembered and re-run once the current one finishes.
+ * Only the most recent is kept: the intermediate states are not worth
+ * encoding.
+ */
+let commitQueued = false;
+
 async function commitAdjust() {
   const item = activeItem();
-  if (!item?.result || state.processing) return;
+  if (!item?.result) return;
+  if (state.processing) {
+    commitQueued = true;
+    return;
+  }
 
   const settings = readSettings();
   persistSettings();
@@ -801,11 +845,17 @@ async function commitAdjust() {
     renderQueue();
     const result = item.result;
     if (result) {
+      // Replace the scrub frame with the pixels that were actually encoded.
+      paintAdjustPreview(result.canvas);
       setStatus("CONVERTED", {
         width: result.canvas.width,
         height: result.canvas.height,
         nits: Math.round(result.peak * REFERENCE_WHITE)
       });
+    }
+    if (commitQueued) {
+      commitQueued = false;
+      await commitAdjust();
     }
   }
 }
@@ -858,23 +908,76 @@ function openCompare() {
   elements.compareDialog.showModal();
 }
 
+/**
+ * Drag state for the compare wipe.
+ *
+ * The viewport rectangle is read once per drag rather than per move: reading
+ * it back mid-gesture forces a synchronous layout on every event, which is
+ * what makes the divider stutter on a phone, where moves arrive far faster
+ * than frames. Moves only record a position and a single rAF applies it, so a
+ * burst of coalesced touch events costs one style write.
+ */
+let wipeDrag = null;
+
+function applyWipe() {
+  if (!wipeDrag) return;
+  wipeDrag.frame = 0;
+  setWipe(((wipeDrag.clientX - wipeDrag.rect.left) / wipeDrag.rect.width) * 100);
+}
+
 function wipeFromPointer(event) {
-  const rect = elements.compareViewport.getBoundingClientRect();
-  setWipe(((event.clientX - rect.left) / rect.width) * 100);
+  if (!wipeDrag) return;
+  wipeDrag.clientX = event.clientX;
+  if (!wipeDrag.frame) wipeDrag.frame = requestAnimationFrame(applyWipe);
 }
 
 function beginWipe(event) {
   if (event.button !== undefined && event.button !== 0) return;
+  // A second finger during a pinch would otherwise yank the divider across.
+  if (wipeDrag) return;
   event.preventDefault();
   elements.compareDivider.focus();
-  wipeFromPointer(event);
-  const move = (moveEvent) => wipeFromPointer(moveEvent);
-  const stop = () => {
+
+  wipeDrag = {
+    pointerId: event.pointerId,
+    rect: elements.compareViewport.getBoundingClientRect(),
+    clientX: event.clientX,
+    frame: 0
+  };
+  // Capture keeps the drag alive when the finger leaves the viewport and
+  // guarantees the matching pointerup even if it lands off-element. It throws
+  // when the id is not an active pointer, and the window listeners below
+  // already handle the movement, so a failure must not abort the drag.
+  try {
+    elements.compareViewport.setPointerCapture?.(event.pointerId);
+  } catch {
+    /* not capturable; the drag still works through the window listeners */
+  }
+  applyWipe();
+
+  const move = (moveEvent) => {
+    if (moveEvent.pointerId !== wipeDrag?.pointerId) return;
+    wipeFromPointer(moveEvent);
+  };
+  const stop = (endEvent) => {
+    if (!wipeDrag || (endEvent && endEvent.pointerId !== wipeDrag.pointerId)) return;
+    if (wipeDrag.frame) cancelAnimationFrame(wipeDrag.frame);
+    try {
+      elements.compareViewport.releasePointerCapture?.(wipeDrag.pointerId);
+    } catch {
+      /* already released, or never captured */
+    }
+    wipeDrag = null;
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", stop);
+    window.removeEventListener("pointercancel", stop);
   };
-  window.addEventListener("pointermove", move);
+
+  window.addEventListener("pointermove", move, { passive: true });
   window.addEventListener("pointerup", stop);
+  // Without this the divider stays stuck to the finger if the browser decides
+  // to take the gesture over.
+  window.addEventListener("pointercancel", stop);
 }
 
 function nudgeWipe(event) {
@@ -1072,12 +1175,42 @@ for (const key of ["exposure", ...GRADE_KEYS]) {
   elements[key].addEventListener("change", commitAdjust);
 }
 
-elements.adjust.addEventListener("click", () => elements.adjustDialog.showModal());
+elements.adjust.addEventListener("click", () => {
+  elements.adjustDialog.showModal();
+  // Seed from the current result so the dialog is never blank before the
+  // first drag; afterwards every scrub keeps it in step.
+  paintAdjustPreview(activeItem()?.result?.canvas);
+});
 elements.adjustClose.addEventListener("click", () => elements.adjustDialog.close());
 elements.adjustReset.addEventListener("click", () => {
   resetAdjust();
   scrubAdjust();
   commitAdjust();
+});
+
+/**
+ * Double-click resets a slider, the way most editors behave.
+ *
+ * Range inputs never emit `dblclick` — the browser consumes those mouse
+ * events to drag the thumb — so the second press is detected through the
+ * click counter on `mousedown` instead. That press is also what would jump
+ * the value to wherever the pointer is, so it has to be cancelled.
+ *
+ * The neutral position comes from `defaultValue`, i.e. the HTML `value`
+ * attribute, so this needs no second list to keep in sync: adjustments return
+ * to 0 and settings return to their own default. Assigning `.value` fires no
+ * events, so both are dispatched by hand.
+ */
+document.addEventListener("mousedown", (event) => {
+  if (event.detail !== 2 || event.button !== 0) return;
+  const slider = event.target.closest?.('input[type="range"]');
+  if (!slider || slider.disabled) return;
+
+  event.preventDefault();
+  if (slider.value === slider.defaultValue) return;
+  slider.value = slider.defaultValue;
+  slider.dispatchEvent(new Event("input", { bubbles: true }));
+  slider.dispatchEvent(new Event("change", { bubbles: true }));
 });
 
 elements.compare.addEventListener("click", openCompare);
