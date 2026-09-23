@@ -77,7 +77,8 @@ export const translations = {
     ADJUST: "Adjust the image",
     ADJUST_TITLE: "Adjust image",
     ADJUST_RESET: "Reset adjustments",
-    ADJUST_NOTE: "Changes preview live and apply to the downloaded file.",
+    ADJUST_NOTE:
+      "Changes preview live and apply to the downloaded file. Double-click a slider to reset it.",
     CONTRAST_LABEL: "Contrast",
     HIGHLIGHTS_LABEL: "Highlights",
     SHADOWS_LABEL: "Shadows",
@@ -221,7 +222,8 @@ export const translations = {
     ADJUST: "Ajustar la imagen",
     ADJUST_TITLE: "Ajustar imagen",
     ADJUST_RESET: "Restablecer ajustes",
-    ADJUST_NOTE: "Los cambios se ven al momento y se aplican al archivo que descargues.",
+    ADJUST_NOTE:
+      "Los cambios se ven al momento y se aplican al archivo que descargues. Haz doble clic en un control para restablecerlo.",
     CONTRAST_LABEL: "Contraste",
     HIGHLIGHTS_LABEL: "Luces",
     SHADOWS_LABEL: "Sombras",

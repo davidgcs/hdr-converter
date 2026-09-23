@@ -15,11 +15,13 @@ runs locally in the browser — no upload, no server.
 - Automatic exposure so HDR photos look right on ordinary screens and in
   messaging apps, instead of coming out dark.
 - An adjust panel behind the pencil icon: exposure, contrast, highlights,
-  shadows, white point, black point and saturation, all previewing live from a
-  cached linear buffer so you can work by eye. Every one is neutral by default,
-  and converting again starts from the faithful result.
+  shadows, white point, black point and saturation, previewing live on a copy
+  of the image inside the panel. Every one is neutral by default, a
+  double-click resets any slider, and converting again starts from the
+  faithful result.
 - A before/after view with a draggable wipe, comparing the converted file
-  against the way your device already renders the HDR original.
+  against the way your device already renders the HDR original. The drag is
+  pointer-based and works the same with a finger as with a mouse.
 - Every setting has an **i** button explaining what it changes.
 - Sensible defaults for a normal HDR AVIF; every knob is optional.
 - JPEG, PNG or WebP output with a quality slider and an optional size limit.
@@ -111,13 +113,21 @@ composes on top, so `+1` is one stop above whichever mode is selected.
 
 ### Adjusting it by eye
 
-The pencil icon under the result opens the adjust panel, and everything in it
-previews live. `prepareScene` caches the image after the transfer function has
-been inverted — the expensive part, and the part that does not depend on any
-of these controls — so `renderPreview` only has to redo the gain, the gamut
-matrix, the curve, the sRGB encode and the grade: around 50 ms for a 2560×1440
-image. While you drag, the pane shows that canvas; when you let go the file is
+The pencil icon under the result opens the adjust panel, which carries its own
+copy of the preview so the sliders can be judged against the picture rather
+than by their numbers. Both it and the result pane are painted from the same
+frame, so they cannot drift apart.
+
+`prepareScene` caches the image after the transfer function has been inverted
+— the expensive part, and the part that does not depend on any of these
+controls — so `renderPreview` only has to redo the gain, the gamut matrix, the
+curve, the sRGB encode and the grade: around 50 ms for a 2560×1440 image.
+While you drag, the pane shows that canvas; when you let go the file is
 re-encoded at full resolution and the preview becomes the real file again.
+
+**Double-click any slider to reset it** — to 0 for the adjustments, and to its
+own default for settings like quality. The neutral position is read from the
+control's `value` attribute, so there is no second list to keep in sync.
 
 Both paths share `resolveAdaptation`, `resolvePeak`, `createCurve`,
 `tonemapPixel` and `encodePixel`, and the release reuses the measurement the
