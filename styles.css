@@ -112,6 +112,10 @@ input[type="number"] {
 
 .toolbar {
   display: grid;
+  /* minmax(0, ...) lets the column shrink below its widest content. Without
+     it, a single long <select> option sets the minimum width of the whole
+     toolbar and pushes every button past the edge of a phone screen. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
@@ -313,7 +317,9 @@ input[type="range"] {
 
 .panes {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  /* min(300px, 100%): on the narrowest phones a 300px column is wider than
+     the card, so let it shrink rather than overflow. */
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
   grid-template-rows: auto 1fr auto auto;
   gap: 18px;
 }
@@ -796,6 +802,24 @@ noscript {
   opacity: 0.5;
 }
 
+/* ------------------------------------------------------- scroll lock */
+
+/* While a modal dialog is open the page behind it stays put (see openModal).
+   overflow: hidden keeps the current scroll position; the padding stands in
+   for a classic scrollbar, whose disappearance would shift the page. */
+html.scroll-locked {
+  overflow: hidden;
+  overscroll-behavior: none;
+  padding-right: var(--scrollbar-gap, 0px);
+}
+
+/* Scrolling inside a dialog stops at its edges instead of carrying on into
+   the page underneath. */
+dialog,
+.adjust-body {
+  overscroll-behavior: contain;
+}
+
 /* ------------------------------------------------------- compare dialog */
 
 .compare-dialog {
@@ -828,13 +852,21 @@ noscript {
 .compare-viewport {
   position: relative;
   overflow: hidden;
+  /* A size container, so the wipe layers below can be positioned in units of
+     its width (cqw) by transforms alone, and follow it when it resizes. */
+  container-type: inline-size;
   background: #0d1117;
   line-height: 0;
   touch-action: none;
+  /* No long-press image menu, text selection or tap flash mid-drag. */
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
   user-select: none;
 }
 
-.compare-viewport img {
+.compare-viewport img,
+.compare-viewport canvas {
   display: block;
   width: 100%;
   max-height: 72vh;
@@ -843,23 +875,42 @@ noscript {
   object-fit: contain;
 }
 
+/*
+ * The wipe moves three composited layers by transform and changes nothing
+ * else, so dragging it never lays out or repaints: each frame the browser only
+ * moves textures it already has, which is what keeps it in step with a
+ * finger. Animating `left` and `clip-path` instead repainted both full-size
+ * images on every frame.
+ *
+ * The original is revealed through a window (.compare-before) that slides in
+ * from the left, while the picture inside it slides back by exactly the same
+ * amount, so the picture stays put and only the window's edge moves.
+ */
 .compare-before {
   position: absolute;
   inset: 0;
-  clip-path: inset(0 calc(100% - var(--wipe, 50%)) 0 0);
+  overflow: hidden;
+  transform: translate3d(calc((var(--wipe, 0.5) - 1) * 100cqw), 0, 0);
+  will-change: transform;
+}
+
+.compare-before canvas {
+  transform: translate3d(calc((1 - var(--wipe, 0.5)) * 100cqw), 0, 0);
+  will-change: transform;
 }
 
 .compare-divider {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: var(--wipe, 50%);
+  left: 0;
   width: 2px;
   background: #fff;
   box-shadow: 0 0 10px rgb(0 0 0 / 55%);
   cursor: ew-resize;
   touch-action: none;
-  translate: -1px 0;
+  transform: translate3d(calc(var(--wipe, 0.5) * 100cqw - 1px), 0, 0);
+  will-change: transform;
 }
 
 /* An invisible, finger-sized grab area: the visible line is 2px, which is far
@@ -1116,11 +1167,29 @@ html[data-theme="dark"] .compare-note {
     max-width: none;
   }
 
+  /* A control is otherwise at least as wide as its longest option, however
+     narrow the screen, and one long label widens the whole toolbar past the
+     edge of a phone. Each setting has a full row to itself here, so let it
+     shrink instead. Wider screens keep content-sized controls, where there is
+     room for every label and shrinking would only clip them. */
+  .setting,
+  select,
+  input[type="number"] {
+    min-width: 0;
+  }
+
+  select {
+    max-width: 100%;
+  }
+
   .document-controls .button {
     flex: 1 1 auto;
   }
 
-  .theme-toggle {
+  /* As in Safe Layer: a square at the end of the row. The selector has to
+     outrank `.document-controls .button` above, which would stretch it into a
+     full-width bar. */
+  .document-controls .theme-toggle {
     width: 42px;
     flex: 0 0 auto;
     margin-left: auto;
