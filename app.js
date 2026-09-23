@@ -989,7 +989,7 @@ async function commitAdjust() {
 /** A press shorter than this is a click; longer is a hold. */
 const HOLD_MS = 300;
 /** How long a click shows the unedited picture for. */
-const PEEK_MS = 3000;
+const PEEK_MS = 1500;
 
 const peek = {
   /** The unedited picture is on the canvas. */
