@@ -10,6 +10,7 @@ import {
   toCanvas
 } from "./src/pipeline.js";
 import { REFERENCE_WHITE } from "./src/colorspace.js";
+import { GRADE_DEFAULTS, GRADE_KEYS } from "./src/grade.js";
 
 const STORAGE_KEYS = {
   language: "hdr-converter-language",
@@ -43,10 +44,11 @@ const elements = {
   resultImage: document.querySelector("#result-image"),
   resultPreview: document.querySelector("#result-preview"),
   resultNote: document.querySelector("#result-note"),
-  liveExposure: document.querySelector("#live-exposure"),
-  liveExposureRange: document.querySelector("#live-exposure-range"),
-  liveExposureValue: document.querySelector("#live-exposure-value"),
-  liveExposureReset: document.querySelector("#live-exposure-reset"),
+  stageActions: document.querySelector("#stage-actions"),
+  adjust: document.querySelector("#adjust"),
+  adjustDialog: document.querySelector("#adjust-dialog"),
+  adjustClose: document.querySelector("#adjust-close"),
+  adjustReset: document.querySelector("#adjust-reset"),
   compare: document.querySelector("#compare"),
   compareDialog: document.querySelector("#compare-dialog"),
   compareClose: document.querySelector("#compare-close"),
@@ -74,6 +76,12 @@ const elements = {
   param: document.querySelector("#param"),
   exposure: document.querySelector("#exposure"),
   exposureValue: document.querySelector("#exposure-value"),
+  contrast: document.querySelector("#contrast"),
+  highlights: document.querySelector("#highlights"),
+  shadows: document.querySelector("#shadows"),
+  whites: document.querySelector("#whites"),
+  blacks: document.querySelector("#blacks"),
+  saturation: document.querySelector("#saturation"),
   maxDimension: document.querySelector("#max-dimension"),
   resetSettings: document.querySelector("#reset-settings")
 };
@@ -108,6 +116,12 @@ const TIPS = {
   "input-override": "TIP_INPUT",
   param: "TIP_PARAM",
   exposure: "TIP_EXPOSURE",
+  contrast: "TIP_CONTRAST",
+  highlights: "TIP_HIGHLIGHTS",
+  shadows: "TIP_SHADOWS",
+  whites: "TIP_WHITES",
+  blacks: "TIP_BLACKS",
+  saturation: "TIP_SATURATION",
   "max-dimension": "TIP_MAXDIM"
 };
 
@@ -122,6 +136,10 @@ let tipAnchor = null;
 function showTip(button) {
   tipAnchor = button;
   tip.textContent = translate(button.dataset.tip);
+  // A modal dialog renders in the top layer, above everything in the document,
+  // so a tooltip left on <body> would be hidden behind it. Position is fixed
+  // either way, so moving it keeps the coordinates below valid.
+  (button.closest("dialog") || document.body).append(tip);
   tip.hidden = false;
 
   const anchor = button.getBoundingClientRect();
@@ -282,6 +300,11 @@ function setBusy(isBusy) {
 
 /* ---------------------------------------------------------------- settings */
 
+/** The adjust panel's controls, keyed exactly as the pipeline expects them. */
+function readGrade() {
+  return Object.fromEntries(GRADE_KEYS.map((key) => [key, Number(elements[key].value)]));
+}
+
 function readSettings() {
   const param = elements.param.value.trim();
   return {
@@ -292,6 +315,7 @@ function readSettings() {
     peakMode: elements.peakMode.value,
     peakNits: Number(elements.peakNits.value) || DEFAULT_SETTINGS.peakNits,
     exposure: Number(elements.exposure.value),
+    ...readGrade(),
     inputOverride: elements.inputOverride.value,
     outputFormat: elements.format.value,
     quality: Number(elements.quality.value) / 100,
@@ -307,6 +331,7 @@ function writeSettings(settings) {
   elements.peakMode.value = settings.peakMode;
   elements.peakNits.value = settings.peakNits;
   elements.exposure.value = settings.exposure;
+  for (const key of GRADE_KEYS) elements[key].value = settings[key] ?? 0;
   elements.inputOverride.value = settings.inputOverride;
   elements.format.value = settings.outputFormat;
   elements.quality.value = Math.round(settings.quality * 100);
@@ -340,11 +365,23 @@ function updateSettingVisibility() {
   elements.qualityField.classList.toggle("setting--hidden", elements.format.value === "image/png");
   elements.desatValue.textContent = elements.desat.value;
   elements.qualityValue.textContent = elements.quality.value;
-  elements.exposureValue.textContent = elements.exposure.value;
-  // The slider under the result and the advanced setting are the same control.
-  const stops = Number(elements.exposure.value);
-  elements.liveExposureRange.value = String(stops);
-  elements.liveExposureValue.textContent = stops.toFixed(2);
+  elements.exposureValue.textContent = Number(elements.exposure.value).toFixed(2);
+  for (const key of GRADE_KEYS) {
+    document.querySelector(`#${key}-value`).textContent = elements[key].value;
+  }
+  elements.adjustReset.disabled = isNeutralAdjust();
+}
+
+/** True when the adjust panel would not change the conversion at all. */
+function isNeutralAdjust() {
+  return !Number(elements.exposure.value) && GRADE_KEYS.every((key) => !Number(elements[key].value));
+}
+
+/** Puts the adjust panel back to the neutral, faithful conversion. */
+function resetAdjust() {
+  elements.exposure.value = "0";
+  for (const key of GRADE_KEYS) elements[key].value = String(GRADE_DEFAULTS[key]);
+  updateSettingVisibility();
 }
 
 /* ------------------------------------------------------------------- items */
@@ -478,9 +515,7 @@ function renderResult() {
   elements.download.disabled = !ready;
   elements.openTab.disabled = !ready;
   elements.compare.disabled = !ready;
-  elements.liveExposure.hidden = !result;
-  elements.liveExposureRange.disabled = !ready;
-  elements.liveExposureReset.disabled = !ready || Number(elements.liveExposureRange.value) === 0;
+  elements.adjust.disabled = !ready;
 
   if (!result) {
     elements.resultNote.textContent = "";
@@ -559,9 +594,7 @@ function updateControls() {
   elements.download.disabled = !item?.result || busy;
   elements.openTab.disabled = !item?.result || busy;
   elements.compare.disabled = !item?.result || busy;
-  elements.liveExposureRange.disabled = !item?.result || busy;
-  elements.liveExposureReset.disabled =
-    !item?.result || busy || Number(elements.liveExposureRange.value) === 0;
+  elements.adjust.disabled = !item?.result || busy;
   elements.downloadAll.hidden = converted.length < 2;
   elements.downloadAll.disabled = converted.length < 2 || busy;
 
@@ -678,10 +711,9 @@ async function convertItem(item, settings, onProgress) {
 
 async function convertAllItems() {
   if (!state.items.length) return;
-  // Exposure is a preview adjustment made against the previous result, so a new
-  // conversion starts from the default again.
-  elements.exposure.value = "0";
-  updateSettingVisibility();
+  // The adjust panel tweaks the result you are looking at, so a new conversion
+  // starts from the faithful, unedited one again.
+  resetAdjust();
   const settings = readSettings();
   persistSettings();
 
@@ -718,24 +750,26 @@ async function convertAllItems() {
   }
 }
 
-/* ----------------------------------------------------------- live exposure */
+/* -------------------------------------------------------- live adjustments */
 
 let scrubFrame = 0;
 
-/** Redraws the preview from the cached scene, without re-encoding a file. */
-function scrubExposure() {
+/**
+ * Redraws the preview from the cached scene, without re-encoding a file.
+ *
+ * Only the cheap tail of the pipeline re-runs — everything up to the transfer
+ * function is cached by `prepareScene` — so dragging any of the adjust sliders
+ * stays interactive even on a full-resolution image.
+ */
+function scrubAdjust() {
+  updateSettingVisibility();
+
   const item = activeItem();
   if (!item?.result || state.processing) return;
 
-  const stops = Number(elements.liveExposureRange.value);
-  elements.liveExposureValue.textContent = stops.toFixed(2);
-  elements.exposure.value = String(stops);
-  elements.exposureValue.textContent = String(stops);
-  elements.liveExposureReset.disabled = stops === 0;
-
   cancelAnimationFrame(scrubFrame);
   scrubFrame = requestAnimationFrame(() => {
-    const settings = { ...readSettings(), exposure: stops };
+    const settings = readSettings();
     const imageData = renderPreview(ensurePrepared(item, settings), settings);
     const canvas = elements.resultPreview;
     canvas.width = imageData.width;
@@ -748,7 +782,7 @@ function scrubExposure() {
 }
 
 /** Re-encodes the active item so the preview is a real file again. */
-async function commitExposure() {
+async function commitAdjust() {
   const item = activeItem();
   if (!item?.result || state.processing) return;
 
@@ -1033,12 +1067,17 @@ elements.overlay.addEventListener("pointerdown", beginDrag);
 elements.sourceImage.addEventListener("load", renderSelection);
 window.addEventListener("resize", renderSelection);
 
-elements.liveExposureRange.addEventListener("input", scrubExposure);
-elements.liveExposureRange.addEventListener("change", commitExposure);
-elements.liveExposureReset.addEventListener("click", () => {
-  elements.liveExposureRange.value = "0";
-  scrubExposure();
-  commitExposure();
+for (const key of ["exposure", ...GRADE_KEYS]) {
+  elements[key].addEventListener("input", scrubAdjust);
+  elements[key].addEventListener("change", commitAdjust);
+}
+
+elements.adjust.addEventListener("click", () => elements.adjustDialog.showModal());
+elements.adjustClose.addEventListener("click", () => elements.adjustDialog.close());
+elements.adjustReset.addEventListener("click", () => {
+  resetAdjust();
+  scrubAdjust();
+  commitAdjust();
 });
 
 elements.compare.addEventListener("click", openCompare);
@@ -1056,7 +1095,6 @@ elements.compareDivider.addEventListener("keydown", nudgeWipe);
   elements.quality,
   elements.inputOverride,
   elements.param,
-  elements.exposure,
   elements.maxDimension
 ].forEach((control) => {
   control.addEventListener("input", () => {

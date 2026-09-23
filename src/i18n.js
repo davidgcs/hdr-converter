@@ -74,7 +74,16 @@ export const translations = {
     DOWNLOAD: "Download",
     CLOSE: "Close",
     RESET: "Reset",
-    LIVE_EXPOSURE: "Exposure",
+    ADJUST: "Adjust the image",
+    ADJUST_TITLE: "Adjust image",
+    ADJUST_RESET: "Reset adjustments",
+    ADJUST_NOTE: "Changes preview live and apply to the downloaded file.",
+    CONTRAST_LABEL: "Contrast",
+    HIGHLIGHTS_LABEL: "Highlights",
+    SHADOWS_LABEL: "Shadows",
+    WHITES_LABEL: "White point",
+    BLACKS_LABEL: "Black point",
+    SATURATION_LABEL: "Saturation",
     COMPARE: "Compare with the original",
     COMPARE_TITLE: "Before and after",
     COMPARE_BEFORE: "Original (HDR)",
@@ -103,6 +112,18 @@ export const translations = {
       "Fine-tunes the selected curve. Leave it empty to use the FFmpeg default, which suits almost every image.",
     TIP_EXPOSURE:
       "Brightens or darkens the whole image before tone mapping, in camera stops. +1 doubles the light, -1 halves it. It stacks on top of the Brightness setting.",
+    TIP_CONTRAST:
+      "Separates light from dark around mid grey. Pure black and pure white never move, so raising it deepens shadows and brightens highlights without clipping either end.",
+    TIP_HIGHLIGHTS:
+      "Only the bright tones, leaving midtones and shadows alone. Lower it to bring back detail in a blown sky or a lamp; raise it to make bright areas glow more.",
+    TIP_SHADOWS:
+      "Only the dark tones. Raise it to open up detail hidden in shadow without washing out the rest of the picture. Pure black stays black either way.",
+    TIP_WHITES:
+      "Where white begins. Raising it makes more of the brightest tones pure white, which adds punch but loses the detail above the new point.",
+    TIP_BLACKS:
+      "Where black begins. Lowering it crushes the deepest tones to true black for a denser look; raising it fades them to grey, the way film does.",
+    TIP_SATURATION:
+      "How far colours sit from grey. 0 leaves the converted colours exactly as measured, which is the faithful result; move it only if you want a more or less vivid look.",
     TIP_MAXDIM:
       "Shrinks the result so the longest side fits this many pixels. The aspect ratio is always preserved.",
     DOWNLOAD_ALL: "Download all",
@@ -197,7 +218,16 @@ export const translations = {
     DOWNLOAD: "Descargar",
     CLOSE: "Cerrar",
     RESET: "Restablecer",
-    LIVE_EXPOSURE: "Exposición",
+    ADJUST: "Ajustar la imagen",
+    ADJUST_TITLE: "Ajustar imagen",
+    ADJUST_RESET: "Restablecer ajustes",
+    ADJUST_NOTE: "Los cambios se ven al momento y se aplican al archivo que descargues.",
+    CONTRAST_LABEL: "Contraste",
+    HIGHLIGHTS_LABEL: "Luces",
+    SHADOWS_LABEL: "Sombras",
+    WHITES_LABEL: "Punto de blanco",
+    BLACKS_LABEL: "Punto de negro",
+    SATURATION_LABEL: "Saturación",
     COMPARE: "Comparar con la original",
     COMPARE_TITLE: "Antes y después",
     COMPARE_BEFORE: "Original (HDR)",
@@ -226,6 +256,18 @@ export const translations = {
       "Ajusta la curva seleccionada. Déjalo vacío para usar el valor por defecto de FFmpeg, que sirve para casi cualquier imagen.",
     TIP_EXPOSURE:
       "Aclara u oscurece toda la imagen antes del mapeo de tonos, en pasos de cámara. +1 duplica la luz y -1 la reduce a la mitad. Se suma al ajuste de Brillo.",
+    TIP_CONTRAST:
+      "Separa las luces de las sombras alrededor del gris medio. El negro y el blanco puros no se mueven, así que subirlo intensifica las sombras y aclara las luces sin quemar ninguno de los dos extremos.",
+    TIP_HIGHLIGHTS:
+      "Afecta solo a los tonos claros y deja intactos los medios y las sombras. Bájalo para recuperar detalle en un cielo quemado o en una lámpara; súbelo para que las zonas claras brillen más.",
+    TIP_SHADOWS:
+      "Afecta solo a los tonos oscuros. Súbelo para descubrir detalle escondido en las sombras sin deslavar el resto de la imagen. El negro puro sigue siendo negro en cualquier caso.",
+    TIP_WHITES:
+      "Dónde empieza el blanco. Subirlo convierte en blanco puro más tonos claros, lo que da fuerza pero pierde el detalle que quede por encima de ese punto.",
+    TIP_BLACKS:
+      "Dónde empieza el negro. Bajarlo lleva los tonos más oscuros a negro puro y da una imagen más densa; subirlo los aclara hacia el gris, como hace el cine.",
+    TIP_SATURATION:
+      "Cuánto se alejan los colores del gris. En 0 se conservan los colores tal y como se han medido, que es el resultado fiel; muévelo solo si quieres un aspecto más o menos vivo.",
     TIP_MAXDIM:
       "Reduce el resultado para que el lado más largo quepa en estos píxeles. La proporción siempre se conserva.",
     DOWNLOAD_ALL: "Descargar todo",

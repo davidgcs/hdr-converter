@@ -14,10 +14,10 @@ runs locally in the browser — no upload, no server.
 - Tone mapping curves ported from FFmpeg's `tonemap` filter.
 - Automatic exposure so HDR photos look right on ordinary screens and in
   messaging apps, instead of coming out dark.
-- A live exposure slider under the result: it redraws from a cached linear
-  buffer in a few tens of milliseconds, so you can dial the brightness in by
-  eye without re-running a conversion. Converting again starts from the
-  default exposure.
+- An adjust panel behind the pencil icon: exposure, contrast, highlights,
+  shadows, white point, black point and saturation, all previewing live from a
+  cached linear buffer so you can work by eye. Every one is neutral by default,
+  and converting again starts from the faithful result.
 - A before/after view with a draggable wipe, comparing the converted file
   against the way your device already renders the HDR original.
 - Every setting has an **i** button explaining what it changes.
@@ -57,7 +57,9 @@ zscale=p=bt709,tonemap=tonemap=mobius:desat=2,zscale=t=bt709:m=bt709:r=tv" outpu
    primaries, exactly like `zscale=p=bt709`.
 5. **Tone map.** A port of `libavfilter/vf_tonemap.c`: highlight desaturation,
    then the selected curve applied to the brightest component so hues stay put.
-6. **Encode.** Back to sRGB, cropped, optionally resized, then JPEG/PNG/WebP.
+6. **Encode.** Back to sRGB, then the display-referred adjustments from the
+   pencil panel if any are set, cropped, optionally resized, then
+   JPEG/PNG/WebP.
 
 The ported maths is covered by a reference test: a plain sRGB PNG round-trips
 pixel-exact, and an 8-bit AVIF decodes within ~0.6/255 mean difference of
@@ -109,21 +111,44 @@ composes on top, so `+1` is one stop above whichever mode is selected.
 
 ### Adjusting it by eye
 
-The slider under the result is live. `prepareScene` caches the image after the
-transfer function has been inverted — the expensive part, and the part that
-does not depend on exposure — so `renderPreview` only has to redo the gain,
-the gamut matrix, the curve and the sRGB encode: about 37 ms for a 2560×1440
+The pencil icon under the result opens the adjust panel, and everything in it
+previews live. `prepareScene` caches the image after the transfer function has
+been inverted — the expensive part, and the part that does not depend on any
+of these controls — so `renderPreview` only has to redo the gain, the gamut
+matrix, the curve, the sRGB encode and the grade: around 50 ms for a 2560×1440
 image. While you drag, the pane shows that canvas; when you let go the file is
 re-encoded at full resolution and the preview becomes the real file again.
 
-Both paths share `resolveAdaptation`, `resolvePeak`, `createCurve` and
-`tonemapPixel`, and the release reuses the measurement the preview exposed
-from, so the brightness cannot shift under you when you stop dragging. A test
-asserts the two agree to within 0.87/255.
+Both paths share `resolveAdaptation`, `resolvePeak`, `createCurve`,
+`tonemapPixel` and `encodePixel`, and the release reuses the measurement the
+preview exposed from, so nothing can shift under you when you stop dragging.
 
-The slider is a tweak to the result you are looking at, not a setting, so
-pressing **Convert** returns it to zero. **Restore defaults**, at the end of
-the settings row, puts every control back to the recommended baseline.
+| Control | Where it acts |
+| --- | --- |
+| Exposure | Linear light, *before* the tone curve — a stop is a stop, and the curve is rebuilt around the new peak. |
+| Contrast | An S-curve about mid grey that fixes both endpoints, so it cannot clip either end. |
+| Highlights / Shadows | One weighted lobe each, peaking at 25% and 75%. |
+| White / black point | The endpoints of the displayed range. |
+| Saturation | Distance from grey, around the graded luminance. |
+
+Everything except exposure is display-referred and runs *after* tone mapping,
+on the sRGB-encoded signal, because that is the domain those controls are
+named for: "shadows" and a black point are statements about where tones land
+on the final display, not about scene light.
+
+Two properties are enforced by `src/grade.js` and checked by the tests. The
+curve is **monotonic** over the whole parameter space — all 59,048 slider
+combinations — so no setting can invert tones or posterise a gradient. And the
+highlight and shadow lobes vanish *with zero slope* at both ends, so no amount
+of shadow lift can raise pure black: an intentionally dark scene stays dark.
+The lobe width is what makes those two controls honest. A gentle
+`x²(1-x)³` is still at 38% strength in the highlights, which would make
+"shadows" a midtone control wearing a disguise; `x²(1-x)⁶` leaks about 1/255
+there, while still moving its own zone by 38/255 at the extreme.
+
+These adjust the result you are looking at rather than being settings, so
+pressing **Convert** returns them all to neutral. **Restore defaults**, at the
+end of the settings row, puts every control back to the recommended baseline.
 
 ## Settings
 
@@ -137,8 +162,12 @@ the settings row, puts every control back to the recommended baseline.
 | Output format / quality | JPEG, 92 | PNG keeps alpha and skips the quality slider. |
 | Read source as | Auto | Override when a file has wrong or missing HDR tagging. |
 | Curve parameter | FFmpeg default | `tonemap`'s `param` (0.3 for mobius, 1.8 for gamma, …). |
-| Exposure | `0` | Extra stops applied in linear light, on top of the Brightness mode. |
 | Limit longest side | Original | Optional downscale; the aspect ratio is preserved. |
+
+The pencil icon under the result opens the per-image adjustments — exposure,
+contrast, highlights, shadows, white point, black point and saturation. All are
+neutral by default, so they change nothing until you move them, and **Convert**
+returns them to neutral. See [Adjusting it by eye](#adjusting-it-by-eye).
 
 ## Browser support
 
