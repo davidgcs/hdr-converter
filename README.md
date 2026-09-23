@@ -41,7 +41,8 @@ runs locally in the browser — no upload, no server.
   or opening it in a new tab all give you the same image.
 - English and Spanish interface with a persistent light/dark theme.
 - Multi-file queue: load several images, convert them all with the same
-  settings and download them individually or in one go.
+  settings and download them individually or in one go. The round trash
+  button on each thumbnail takes that one image out of the list.
 
 ## How the conversion works
 

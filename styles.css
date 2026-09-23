@@ -443,8 +443,13 @@ input[type="range"] {
 }
 
 .queue-item {
-  display: grid;
+  position: relative;
   width: 84px;
+}
+
+.queue-select {
+  display: grid;
+  width: 100%;
   padding: 4px;
   border: 1px solid #cbd5e1;
   border-radius: 10px;
@@ -453,12 +458,12 @@ input[type="range"] {
   gap: 4px;
 }
 
-.queue-item[aria-current="true"] {
+.queue-select[aria-current="true"] {
   border-color: #7c3aed;
   box-shadow: 0 0 0 2px rgb(124 58 237 / 30%);
 }
 
-.queue-item img {
+.queue-select img {
   display: block;
   width: 100%;
   height: 56px;
@@ -467,12 +472,69 @@ input[type="range"] {
   background: #e5e7eb;
 }
 
-.queue-item span {
+.queue-select span {
   overflow: hidden;
   color: #475569;
   font-size: 0.6875rem;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* A dark disc with a light rim, so the icon reads on bright and dark
+   thumbnails alike; it turns red to say what it does before it is pressed. */
+.queue-remove {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  display: grid;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid rgb(255 255 255 / 35%);
+  border-radius: 50%;
+  color: #fff;
+  background: rgb(15 23 42 / 72%);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 35%);
+  cursor: pointer;
+  place-items: center;
+}
+
+.queue-remove svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.queue-remove:hover,
+.queue-remove:focus-visible {
+  border-color: transparent;
+  background: #dc2626;
+}
+
+.queue-select:focus-visible,
+.queue-remove:focus-visible {
+  outline: 3px solid rgb(37 99 235 / 45%);
+  outline-offset: 2px;
+}
+
+.queue-remove:disabled {
+  background: rgb(15 23 42 / 72%);
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* A little more to aim at where the pointer is a finger. */
+@media (pointer: coarse) {
+  .queue-remove {
+    top: 7px;
+    right: 7px;
+    width: 30px;
+    height: 30px;
+  }
 }
 
 .document-save {
@@ -1024,7 +1086,7 @@ html[data-theme="dark"] .status,
 html[data-theme="dark"] .field-label,
 html[data-theme="dark"] .advanced summary,
 html[data-theme="dark"] .pane-note,
-html[data-theme="dark"] .queue-item span,
+html[data-theme="dark"] .queue-select span,
 html[data-theme="dark"] .empty {
   color: #8c959f;
 }
@@ -1065,7 +1127,7 @@ html[data-theme="dark"] .stage {
   background: #0d1117;
 }
 
-html[data-theme="dark"] .queue-item {
+html[data-theme="dark"] .queue-select {
   border-color: #30363d;
   background: #161b22;
 }
