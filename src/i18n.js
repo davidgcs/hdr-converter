@@ -79,7 +79,13 @@ export const translations = {
     ADJUST_TITLE: "Adjust image",
     ADJUST_RESET: "Reset adjustments",
     ADJUST_NOTE:
-      "Edits apply straight away, at full quality, to this image only. Click the picture to see it without edits, or hold it. Double-click a slider to reset it.",
+      "Edits apply straight away, at full quality, to this image only. Click the picture to see it without edits, or hold it. Scroll or pinch to zoom, and drag to move around. Double-click a slider to reset it.",
+    ZOOM_LABEL: "Zoom",
+    ZOOM_IN: "Zoom in",
+    ZOOM_OUT: "Zoom out",
+    ZOOM_FIT: "Fit to window",
+    ZOOM_ACTUAL: "Actual size (100%)",
+    ZOOM_PERCENT: "{n}%",
     UNDO: "Undo",
     REDO: "Redo",
     NOISE_LABEL: "Noise reduction",
@@ -107,7 +113,7 @@ export const translations = {
     COMPARE_AFTER: "Converted (SDR)",
     COMPARE_SLIDER: "Move to wipe between the two images",
     COMPARE_NOTE:
-      "The left side is how this device already renders the HDR file — the same thing another screen or a messaging app would show.",
+      "The left side is how this device already renders the HDR file — the same thing another screen or a messaging app would show. Scroll or pinch to zoom; zoomed in, drag the picture to move around and the line to compare.",
     TIP_TONEMAP:
       "How light brighter than the SDR screen can show is fitted into range. BT.2390, the ITU standard, reproduces every tone that fits exactly as it was, rolls off only what is brighter, and keeps shadow detail above the screen's black. Mobius is FFmpeg's default, Hable is filmic but darker, and Clip simply cuts anything too bright.",
     TIP_BRIGHTNESS:
@@ -263,7 +269,13 @@ export const translations = {
     ADJUST_TITLE: "Ajustar imagen",
     ADJUST_RESET: "Restablecer ajustes",
     ADJUST_NOTE:
-      "Los ajustes se aplican al momento, con toda la calidad, solo a esta imagen. Haz clic en la imagen para verla sin ajustes, o mantenla pulsada. Haz doble clic en un control para restablecerlo.",
+      "Los ajustes se aplican al momento, con toda la calidad, solo a esta imagen. Haz clic en la imagen para verla sin ajustes, o mantenla pulsada. Usa la rueda o pellizca para ampliar, y arrastra para moverte. Haz doble clic en un control para restablecerlo.",
+    ZOOM_LABEL: "Zoom",
+    ZOOM_IN: "Acercar",
+    ZOOM_OUT: "Alejar",
+    ZOOM_FIT: "Ajustar a la ventana",
+    ZOOM_ACTUAL: "Tamaño real (100 %)",
+    ZOOM_PERCENT: "{n} %",
     UNDO: "Deshacer",
     REDO: "Rehacer",
     NOISE_LABEL: "Reducción de ruido",
@@ -291,7 +303,7 @@ export const translations = {
     COMPARE_AFTER: "Convertida (SDR)",
     COMPARE_SLIDER: "Desplaza para comparar las dos imágenes",
     COMPARE_NOTE:
-      "La parte izquierda es como este dispositivo ya muestra el archivo HDR, lo mismo que vería otra pantalla o una aplicación de mensajería.",
+      "La parte izquierda es como este dispositivo ya muestra el archivo HDR, lo mismo que vería otra pantalla o una aplicación de mensajería. Usa la rueda o pellizca para ampliar; con zoom, arrastra la imagen para moverte y la línea para comparar.",
     TIP_TONEMAP:
       "Cómo se encaja la luz que la pantalla SDR no puede mostrar. BT.2390, el estándar de la ITU, reproduce tal cual cada tono que cabe, comprime solo lo que es más brillante y conserva el detalle de las sombras por encima del negro de la pantalla. Mobius es el de FFmpeg, Hable es cinematográfico pero más oscuro y Clip simplemente recorta lo que sobra.",
     TIP_BRIGHTNESS:

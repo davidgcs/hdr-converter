@@ -11,6 +11,7 @@ import {
 import { REFERENCE_WHITE } from "./src/colorspace.js";
 import { GRADE_DEFAULTS, GRADE_KEYS } from "./src/grade.js";
 import { PRIORITY, createPool } from "./src/pool.js";
+import { ZOOM_STEP, createZoom, zoomKey } from "./src/zoom.js";
 
 const STORAGE_KEYS = {
   language: "hdr-converter-language",
@@ -64,6 +65,8 @@ const elements = {
   adjustCanvas: document.querySelector("#adjust-canvas"),
   adjustPreview: document.querySelector("#adjust-preview"),
   adjustPeekTag: document.querySelector("#adjust-peek-tag"),
+  adjustZoom: document.querySelector("#adjust-zoom"),
+  compareZoom: document.querySelector("#compare-zoom"),
   undo: document.querySelector("#undo"),
   redo: document.querySelector("#redo"),
   adjustUndo: document.querySelector("#adjust-undo"),
@@ -309,6 +312,8 @@ function applyLanguage(language) {
   // re-labelled here rather than from a fixed key.
   syncQueue();
   labelHistoryButtons();
+  updateZoomBar(elements.adjustZoom, editorZoom.state());
+  updateZoomBar(elements.compareZoom, compareZoom.state());
   updateResultNote();
   updateControls();
   updateSourceNote();
@@ -1328,6 +1333,9 @@ function paintAdjustCanvas(source) {
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width;
     canvas.height = height;
+    // A different resolution keeps the zoom; a different picture (another
+    // crop) returns to fit. The zoom tells the two apart by the image size.
+    editorZoom.relayout();
   }
   const context = canvas.getContext("2d");
   if (source instanceof ImageData) context.putImageData(source, 0, 0);
@@ -1707,11 +1715,12 @@ function endPeek() {
  * press seen from its two ends: it always shows on the way down, and the way
  * up decides whether it stays for a while or goes.
  */
-function pressPeek() {
+/** `startedAt` is when the press began, which is earlier when a zoomed press waited to rule out a pan. */
+function pressPeek(startedAt = performance.now()) {
   peek.toggles = peek.showing && peek.timer !== 0;
   clearTimeout(peek.timer);
   peek.timer = 0;
-  peek.pressAt = performance.now();
+  peek.pressAt = startedAt;
   showPeek();
 }
 
@@ -1721,6 +1730,314 @@ function releasePeek() {
   peek.pressAt = 0;
   if (held >= HOLD_MS || peek.toggles) endPeek();
   else if (peek.showing) peek.timer = setTimeout(endPeek, PEEK_MS);
+}
+
+/* --------------------------------------------------------------------- zoom */
+
+/** A press that moves further than this is a drag; below it, it is still a click or a hold. */
+function dragThreshold(event) {
+  return event.pointerType === "mouse" ? 4 : 8;
+}
+
+/**
+ * A press on the editor's picture might be the start of a pan (when zoomed
+ * in) or of a pinch (a finger, which a second one may join), so the peek
+ * waits this long for it to stay a plain press before it shows the unedited
+ * picture. A mouse on a picture that is not zoomed can be neither, and shows
+ * it at once.
+ */
+const PAN_WAIT_MS = 150;
+
+const editorZoom = createZoom({
+  viewport: elements.adjustPreview,
+  target: elements.adjustCanvas,
+  // The full-size working picture, whatever resolution the canvas holds at the moment.
+  imageSize: () => {
+    const item = activeItem();
+    if (!item) return null;
+    const crop = normalizeCrop(item.source, item.crop);
+    return { width: crop.width, height: crop.height };
+  },
+  onChange: (zoomState) => updateZoomBar(elements.adjustZoom, zoomState)
+});
+
+let compareSize = null;
+const compareZoom = createZoom({
+  viewport: elements.compareViewport,
+  target: elements.compareAfter,
+  imageSize: () => compareSize,
+  onChange: (zoomState) => updateZoomBar(elements.compareZoom, zoomState)
+});
+
+/**
+ * Brings a zoom bar in line with its zoom. It runs on every pan and pinch
+ * move, so it only writes what changed: rewriting the percentage text each
+ * time, even with the same text, made the browser lay out the page on every
+ * move of a pan.
+ */
+function updateZoomBar(bar, zoomState = { percent: 100, fit: true, canZoomIn: true, canZoomOut: false }) {
+  if (!bar) return;
+  const set = (element, property, value) => {
+    if (element[property] !== value) element[property] = value;
+  };
+  const level = bar.querySelector('[data-zoom="toggle"]');
+  const action = translate(zoomState.fit ? "ZOOM_ACTUAL" : "ZOOM_FIT");
+  set(level, "textContent", translate("ZOOM_PERCENT", { n: zoomState.percent || 100 }));
+  if (level.getAttribute("aria-label") !== action) level.setAttribute("aria-label", action);
+  set(level, "title", `${action} (${zoomState.fit ? "1" : "0"})`);
+  const zoomIn = bar.querySelector('[data-zoom="in"]');
+  const zoomOut = bar.querySelector('[data-zoom="out"]');
+  set(zoomIn, "disabled", !zoomState.canZoomIn);
+  set(zoomOut, "disabled", !zoomState.canZoomOut);
+  set(zoomIn, "title", `${translate("ZOOM_IN")} (+)`);
+  set(zoomOut, "title", `${translate("ZOOM_OUT")} (−)`);
+}
+
+function wireZoomBar(bar, zoom) {
+  bar.addEventListener("click", (event) => {
+    const action = event.target.closest("[data-zoom]")?.dataset.zoom;
+    if (action === "in") zoom.zoomBy(ZOOM_STEP);
+    else if (action === "out") zoom.zoomBy(1 / ZOOM_STEP);
+    else if (action === "toggle") zoom.toggle();
+  });
+}
+
+/* Editor: a press shows the unedited picture, a drag pans, two fingers pinch. */
+
+const editorPointers = new Map();
+let editorGesture = null;
+
+function firstTwo(pointers) {
+  const [a, b] = pointers.values();
+  return [a, b];
+}
+
+function startEditorPeek(gesture) {
+  if (gesture.peeked) return;
+  gesture.peeked = true;
+  pressPeek(gesture.downAt);
+}
+
+function editorPointerDown(event) {
+  if (event.pointerType === "mouse" && event.button !== 0) return;
+  event.preventDefault();
+  // Capture, so releasing off the picture still ends the hold or the pan.
+  try {
+    elements.adjustPreview.setPointerCapture(event.pointerId);
+  } catch {
+    /* not capturable; the window listeners still see it */
+  }
+  editorPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+  if (editorPointers.size === 2) {
+    // The first finger was the start of a pinch, not a press on the picture.
+    if (editorGesture?.mode === "press") clearTimeout(editorGesture.peekTimer);
+    endPeek();
+    editorZoom.pinchStart(...firstTwo(editorPointers));
+    editorGesture = { mode: "pinch" };
+    return;
+  }
+  if (editorPointers.size > 2) return;
+
+  const gesture = {
+    mode: "press",
+    id: event.pointerId,
+    x0: event.clientX,
+    y0: event.clientY,
+    downAt: performance.now(),
+    threshold: dragThreshold(event),
+    peeked: false,
+    peekTimer: 0
+  };
+  editorGesture = gesture;
+  if (editorZoom.zoomed || event.pointerType !== "mouse") {
+    gesture.peekTimer = setTimeout(() => {
+      if (editorGesture === gesture && gesture.mode === "press") startEditorPeek(gesture);
+    }, PAN_WAIT_MS);
+  } else {
+    startEditorPeek(gesture);
+  }
+}
+
+function editorPointerMove(event) {
+  const pointer = editorPointers.get(event.pointerId);
+  if (!pointer) return;
+  const dx = event.clientX - pointer.x;
+  const dy = event.clientY - pointer.y;
+  pointer.x = event.clientX;
+  pointer.y = event.clientY;
+  const gesture = editorGesture;
+  if (!gesture) return;
+
+  if (gesture.mode === "pinch") {
+    if (editorPointers.size >= 2) editorZoom.pinchMove(...firstTwo(editorPointers));
+    return;
+  }
+  if (gesture.id !== event.pointerId) return;
+  if (gesture.mode === "press") {
+    const moved = Math.hypot(event.clientX - gesture.x0, event.clientY - gesture.y0);
+    if (moved <= gesture.threshold || !editorZoom.zoomed) return;
+    // It is a pan after all: no peek, and the movement so far counts.
+    clearTimeout(gesture.peekTimer);
+    if (gesture.peeked) endPeek();
+    gesture.mode = "pan";
+    elements.adjustPreview.classList.add("is-panning");
+    editorZoom.panBy(event.clientX - gesture.x0, event.clientY - gesture.y0);
+    return;
+  }
+  if (gesture.mode === "pan") editorZoom.panBy(dx, dy);
+}
+
+function editorPointerUp(event) {
+  if (!editorPointers.has(event.pointerId)) return;
+  editorPointers.delete(event.pointerId);
+  const cancelled = event.type === "pointercancel";
+  const gesture = editorGesture;
+  if (!gesture) return;
+
+  if (gesture.mode === "pinch") {
+    editorZoom.pinchEnd();
+    if (editorPointers.size === 1) {
+      // The finger left behind carries on panning, never peeking.
+      const [id] = editorPointers.keys();
+      editorGesture = { mode: editorZoom.zoomed ? "pan" : "idle", id };
+      elements.adjustPreview.classList.toggle("is-panning", editorZoom.zoomed);
+    } else if (!editorPointers.size) {
+      editorGesture = null;
+      elements.adjustPreview.classList.remove("is-panning");
+    }
+    return;
+  }
+  if (gesture.id !== event.pointerId) return;
+  editorGesture = null;
+  elements.adjustPreview.classList.remove("is-panning");
+  if (gesture.mode !== "press") return;
+  clearTimeout(gesture.peekTimer);
+  if (cancelled) {
+    endPeek();
+    return;
+  }
+  // A quick tap while zoomed never reached the peek: it is a click, and shows it for a moment.
+  if (!gesture.peeked) startEditorPeek(gesture);
+  releasePeek();
+}
+
+function resetEditorGesture() {
+  if (editorGesture?.mode === "press") clearTimeout(editorGesture.peekTimer);
+  editorGesture = null;
+  editorPointers.clear();
+  editorZoom.pinchEnd();
+  elements.adjustPreview.classList.remove("is-panning");
+}
+
+/* Comparison: the line compares, a zoomed picture pans, two fingers pinch. */
+
+const comparePointers = new Map();
+let compareGesture = null;
+
+function wipeAt(rect, clientX) {
+  setWipe(((clientX - rect.left) / rect.width) * 100);
+}
+
+/**
+ * Not zoomed, it works as it always has: a press anywhere moves the line
+ * there, and dragging carries it. Zoomed in, the line is dragged by the line
+ * itself (its 44 px grab area), a drag anywhere else moves the pictures, and a
+ * tap anywhere else still moves the line there. The viewport rectangle is
+ * read once per gesture, since reading it on every move would force a
+ * synchronous layout per event.
+ */
+function comparePointerDown(event) {
+  if (event.pointerType === "mouse" && event.button !== 0) return;
+  event.preventDefault();
+  try {
+    elements.compareViewport.setPointerCapture(event.pointerId);
+  } catch {
+    /* not capturable; the window listeners still see it */
+  }
+  comparePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+  if (comparePointers.size === 2) {
+    // The first finger was the start of a pinch: put the line back where it was.
+    if (compareGesture?.mode === "wipe") setWipe(compareGesture.startWipe);
+    compareZoom.pinchStart(...firstTwo(comparePointers));
+    compareGesture = { mode: "pinch" };
+    return;
+  }
+  if (comparePointers.size > 2) return;
+
+  // Plain focus() can scroll the dialog to bring the whole divider into view,
+  // which jolts the picture just as the drag starts.
+  elements.compareDivider.focus({ preventScroll: true });
+  const rect = elements.compareViewport.getBoundingClientRect();
+  const onLine = Boolean(event.target.closest?.(".compare-divider"));
+  if (compareZoom.zoomed && !onLine) {
+    compareGesture = { mode: "press", id: event.pointerId, rect, x0: event.clientX, y0: event.clientY, threshold: dragThreshold(event) };
+    return;
+  }
+  compareGesture = { mode: "wipe", id: event.pointerId, rect, startWipe: wipePercent };
+  wipeAt(rect, event.clientX);
+}
+
+function comparePointerMove(event) {
+  const pointer = comparePointers.get(event.pointerId);
+  if (!pointer) return;
+  const dx = event.clientX - pointer.x;
+  const dy = event.clientY - pointer.y;
+  pointer.x = event.clientX;
+  pointer.y = event.clientY;
+  const gesture = compareGesture;
+  if (!gesture) return;
+
+  if (gesture.mode === "pinch") {
+    if (comparePointers.size >= 2) compareZoom.pinchMove(...firstTwo(comparePointers));
+    return;
+  }
+  if (gesture.id !== event.pointerId) return;
+  if (gesture.mode === "wipe") {
+    wipeAt(gesture.rect, event.clientX);
+    return;
+  }
+  if (gesture.mode === "press") {
+    if (Math.hypot(event.clientX - gesture.x0, event.clientY - gesture.y0) <= gesture.threshold) return;
+    gesture.mode = "pan";
+    elements.compareViewport.classList.add("is-panning");
+    compareZoom.panBy(event.clientX - gesture.x0, event.clientY - gesture.y0);
+    return;
+  }
+  if (gesture.mode === "pan") compareZoom.panBy(dx, dy);
+}
+
+function comparePointerUp(event) {
+  if (!comparePointers.has(event.pointerId)) return;
+  comparePointers.delete(event.pointerId);
+  const gesture = compareGesture;
+  if (!gesture) return;
+
+  if (gesture.mode === "pinch") {
+    compareZoom.pinchEnd();
+    if (comparePointers.size === 1) {
+      const [id] = comparePointers.keys();
+      compareGesture = { mode: compareZoom.zoomed ? "pan" : "idle", id };
+      elements.compareViewport.classList.toggle("is-panning", compareZoom.zoomed);
+    } else if (!comparePointers.size) {
+      compareGesture = null;
+      elements.compareViewport.classList.remove("is-panning");
+    }
+    return;
+  }
+  if (gesture.id !== event.pointerId) return;
+  compareGesture = null;
+  elements.compareViewport.classList.remove("is-panning");
+  // A tap on a zoomed picture still moves the line there.
+  if (gesture.mode === "press" && event.type !== "pointercancel") wipeAt(gesture.rect, event.clientX);
+}
+
+function resetCompareGesture() {
+  compareGesture = null;
+  comparePointers.clear();
+  compareZoom.pinchEnd();
+  elements.compareViewport.classList.remove("is-panning");
 }
 
 /* ------------------------------------------------------------ modal dialogs */
@@ -1834,66 +2151,11 @@ async function openCompare() {
   paintBeforeImage(item, render);
   elements.compareBefore.setAttribute("aria-label", translate("COMPARE_BEFORE"));
   setWipe(50);
+  compareSize = { width: render.width, height: render.height };
+  resetCompareGesture();
   openModal(elements.compareDialog);
-}
-
-/**
- * Drag state for the compare wipe.
- *
- * Moves are applied as they arrive rather than batched into an animation
- * frame: `setWipe` is too cheap to be worth deferring, and deferring can only
- * add latency. The viewport rectangle is read once per drag, because reading
- * it on every move would force a synchronous layout per event.
- */
-let wipeDrag = null;
-
-function wipeTo(clientX) {
-  const { left, width } = wipeDrag.rect;
-  setWipe(((clientX - left) / width) * 100);
-}
-
-function beginWipe(event) {
-  if (event.button !== undefined && event.button !== 0) return;
-  // A second finger during a pinch would otherwise yank the divider across.
-  if (wipeDrag) return;
-  event.preventDefault();
-  // Plain focus() can scroll the dialog to bring the whole divider into view,
-  // which jolts the picture just as the drag starts.
-  elements.compareDivider.focus({ preventScroll: true });
-
-  wipeDrag = { pointerId: event.pointerId, rect: elements.compareViewport.getBoundingClientRect() };
-  // Capture keeps the drag alive when the finger leaves the viewport and
-  // guarantees the matching pointerup even if it lands off-element. It throws
-  // when the id is not an active pointer, and the window listeners below
-  // already handle the movement, so a failure must not abort the drag.
-  try {
-    elements.compareViewport.setPointerCapture?.(event.pointerId);
-  } catch {
-    /* not capturable; the drag still works through the window listeners */
-  }
-  wipeTo(event.clientX);
-
-  const move = (moveEvent) => {
-    if (moveEvent.pointerId === wipeDrag?.pointerId) wipeTo(moveEvent.clientX);
-  };
-  const stop = (endEvent) => {
-    if (!wipeDrag || (endEvent && endEvent.pointerId !== wipeDrag.pointerId)) return;
-    try {
-      elements.compareViewport.releasePointerCapture?.(wipeDrag.pointerId);
-    } catch {
-      /* already released, or never captured */
-    }
-    wipeDrag = null;
-    window.removeEventListener("pointermove", move);
-    window.removeEventListener("pointerup", stop);
-    window.removeEventListener("pointercancel", stop);
-  };
-
-  window.addEventListener("pointermove", move, { passive: true });
-  window.addEventListener("pointerup", stop);
-  // Without this the divider stays stuck to the finger if the browser decides
-  // to take the gesture over.
-  window.addEventListener("pointercancel", stop);
+  // Every comparison starts fit to the window.
+  compareZoom.reset();
 }
 
 function nudgeWipe(event) {
@@ -2247,7 +2509,10 @@ document.addEventListener("keydown", onHistoryShortcut);
 elements.adjust.addEventListener("click", () => {
   const item = activeItem();
   if (!item?.result) return;
+  resetEditorGesture();
   openModal(elements.adjustDialog);
+  // Every visit to the editor starts fit to the window.
+  editorZoom.reset();
   // Seed from the current picture so the dialog is never blank before the
   // first drag; afterwards every scrub keeps it in step.
   if (item.render) paintAdjustPreview(item.render.imageData);
@@ -2260,32 +2525,37 @@ elements.adjust.addEventListener("click", () => {
 });
 elements.adjustClose.addEventListener("click", () => elements.adjustDialog.close());
 elements.adjustDialog.addEventListener("close", () => {
-  peek.pointerId = null;
+  resetEditorGesture();
   endPeek();
   cancelUneditedRender();
 });
+elements.compareDialog.addEventListener("close", resetCompareGesture);
 
-elements.adjustPreview.addEventListener("pointerdown", (event) => {
-  if (event.button !== 0 || peek.pointerId !== null) return;
-  event.preventDefault();
-  peek.pointerId = event.pointerId;
-  // Capture, so releasing off the picture still ends the hold.
-  try {
-    elements.adjustPreview.setPointerCapture(event.pointerId);
-  } catch {
-    /* not capturable; pointerup still arrives while over the picture */
-  }
-  pressPeek();
+elements.adjustPreview.addEventListener("pointerdown", editorPointerDown);
+elements.adjustPreview.addEventListener("wheel", (event) => editorZoom.wheel(event), { passive: false });
+elements.compareViewport.addEventListener("pointerdown", comparePointerDown);
+elements.compareViewport.addEventListener("wheel", (event) => compareZoom.wheel(event), { passive: false });
+// On the window, so a gesture keeps going wherever the pointer goes; each
+// handler ignores pointers that are not part of its own gesture.
+window.addEventListener("pointermove", (event) => {
+  editorPointerMove(event);
+  comparePointerMove(event);
+}, { passive: true });
+for (const type of ["pointerup", "pointercancel"]) {
+  window.addEventListener(type, (event) => {
+    editorPointerUp(event);
+    comparePointerUp(event);
+  });
+}
+wireZoomBar(elements.adjustZoom, editorZoom);
+wireZoomBar(elements.compareZoom, compareZoom);
+elements.adjustDialog.addEventListener("keydown", (event) => {
+  if (isTextEntry(event.target)) return;
+  if (zoomKey(editorZoom, event, { pan: event.target === elements.adjustPreview, viewport: elements.adjustPreview })) event.preventDefault();
 });
-elements.adjustPreview.addEventListener("pointerup", (event) => {
-  if (event.pointerId !== peek.pointerId) return;
-  peek.pointerId = null;
-  releasePeek();
-});
-elements.adjustPreview.addEventListener("pointercancel", (event) => {
-  if (event.pointerId !== peek.pointerId) return;
-  peek.pointerId = null;
-  endPeek();
+elements.compareDialog.addEventListener("keydown", (event) => {
+  // The divider keeps its arrow keys for the line.
+  if (zoomKey(compareZoom, event)) event.preventDefault();
 });
 // A long press would otherwise open the browser's image menu on touch screens.
 elements.adjustPreview.addEventListener("contextmenu", (event) => event.preventDefault());
@@ -2348,7 +2618,6 @@ for (const dialog of document.querySelectorAll("dialog")) {
   dialog.addEventListener("close", releaseScrollLock);
 }
 elements.compareClose.addEventListener("click", () => elements.compareDialog.close());
-elements.compareViewport.addEventListener("pointerdown", beginWipe);
 elements.compareDivider.addEventListener("keydown", nudgeWipe);
 
 [

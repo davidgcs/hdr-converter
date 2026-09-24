@@ -363,6 +363,23 @@
         <span class="compare-tag compare-tag--left" data-i18n="COMPARE_BEFORE">Original (HDR)</span>
         <span class="compare-tag compare-tag--right" data-i18n="COMPARE_AFTER">Converted (SDR)</span>
       </div>
+      <div class="zoom-bar" id="compare-zoom" role="toolbar" data-i18n-aria-label="ZOOM_LABEL" aria-label="Zoom">
+        <button class="icon-button" type="button" data-zoom="out" data-i18n-aria-label="ZOOM_OUT" aria-label="Zoom out">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="6"/>
+            <path d="m20 20-4.35-4.35"/>
+            <path d="M8 11h6"/>
+          </svg>
+        </button>
+        <button class="zoom-level" type="button" data-zoom="toggle">100%</button>
+        <button class="icon-button" type="button" data-zoom="in" data-i18n-aria-label="ZOOM_IN" aria-label="Zoom in">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="6"/>
+            <path d="m20 20-4.35-4.35"/>
+            <path d="M11 8v6M8 11h6"/>
+          </svg>
+        </button>
+      </div>
       <p class="compare-note" data-i18n="COMPARE_NOTE">
         The left side is how this device already renders the HDR file.
       </p>
@@ -392,17 +409,36 @@
         </button>
       </div>
 
-      <div
-        class="adjust-preview"
-        id="adjust-preview"
-        role="button"
-        tabindex="0"
-        aria-pressed="false"
-        aria-label="Show the picture without your edits: click for a moment, or hold"
-        data-i18n-aria-label="ADJUST_PEEK"
-      >
-        <canvas id="adjust-canvas"></canvas>
-        <span class="adjust-peek-tag" id="adjust-peek-tag" hidden data-i18n="ADJUST_PEEK_TAG">Without edits</span>
+      <div class="adjust-view">
+        <div
+          class="adjust-preview"
+          id="adjust-preview"
+          role="button"
+          tabindex="0"
+          aria-pressed="false"
+          aria-label="Show the picture without your edits: click for a moment, or hold"
+          data-i18n-aria-label="ADJUST_PEEK"
+        >
+          <canvas id="adjust-canvas"></canvas>
+          <span class="adjust-peek-tag" id="adjust-peek-tag" hidden data-i18n="ADJUST_PEEK_TAG">Without edits</span>
+        </div>
+        <div class="zoom-bar" id="adjust-zoom" role="toolbar" data-i18n-aria-label="ZOOM_LABEL" aria-label="Zoom">
+          <button class="icon-button" type="button" data-zoom="out" data-i18n-aria-label="ZOOM_OUT" aria-label="Zoom out">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="6"/>
+              <path d="m20 20-4.35-4.35"/>
+              <path d="M8 11h6"/>
+            </svg>
+          </button>
+          <button class="zoom-level" type="button" data-zoom="toggle">100%</button>
+          <button class="icon-button" type="button" data-zoom="in" data-i18n-aria-label="ZOOM_IN" aria-label="Zoom in">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="6"/>
+              <path d="m20 20-4.35-4.35"/>
+              <path d="M11 8v6M8 11h6"/>
+            </svg>
+          </button>
+        </div>
       </div>
 
       <div class="adjust-body">
