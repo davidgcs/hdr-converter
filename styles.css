@@ -381,6 +381,12 @@ input[type="range"] {
   touch-action: none;
 }
 
+/* The previous picture, while the next one decodes (see renderSource). */
+.page.is-loading img {
+  opacity: 0.35;
+  transition: opacity 120ms ease;
+}
+
 .overlay:not(.crop-mode) {
   pointer-events: none;
 }
@@ -393,6 +399,19 @@ input[type="range"] {
     0 0 0 9999px rgb(15 23 42 / 48%),
     inset 0 0 0 1px rgb(255 255 255 / 65%);
   cursor: move;
+}
+
+/* Outside crop mode the applied crop stays visible: the kept area is clear,
+   the rest dimmed, and it cannot be dragged. */
+.crop-selection.crop-applied {
+  border-color: rgb(255 255 255 / 75%);
+  background: none;
+  cursor: default;
+  pointer-events: none;
+}
+
+.crop-applied .crop-handle {
+  display: none;
 }
 
 .crop-handle {
@@ -463,7 +482,8 @@ input[type="range"] {
   box-shadow: 0 0 0 2px rgb(124 58 237 / 30%);
 }
 
-.queue-select img {
+.queue-select img,
+.queue-select canvas {
   display: block;
   width: 100%;
   height: 56px;
@@ -645,6 +665,18 @@ noscript {
 
 /* Sits in its own row under the preview rather than over the picture, so the
    buttons never cover the image they act on. */
+/* Undo and redo sit apart from the actions on the image, at the far left. */
+.history-actions {
+  display: flex;
+  gap: 8px;
+  margin-right: auto;
+}
+
+.adjust-head .history-actions {
+  margin-right: 0;
+  margin-left: auto;
+}
+
 .stage-actions {
   display: flex;
   gap: 8px;

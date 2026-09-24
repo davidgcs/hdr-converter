@@ -264,12 +264,26 @@
                   Convert an image to see the SDR result.
                 </div>
                 <div class="page" id="result-page" hidden>
-                  <img id="result-image" class="document-canvas" alt="">
+                  <canvas id="result-canvas" class="document-canvas" role="img"></canvas>
                   <canvas id="result-preview" class="document-canvas" hidden></canvas>
                 </div>
               </div>
               <p class="pane-note" id="result-note"></p>
               <div class="stage-actions" id="stage-actions">
+                <div class="history-actions">
+                  <button id="undo" class="icon-button" type="button" disabled data-i18n-aria-label="UNDO" data-shortcut="undo">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M9 14 4 9l5-5"/>
+                      <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>
+                    </svg>
+                  </button>
+                  <button id="redo" class="icon-button" type="button" disabled data-i18n-aria-label="REDO" data-shortcut="redo">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="m15 14 5-5-5-5"/>
+                      <path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>
+                    </svg>
+                  </button>
+                </div>
                 <button id="adjust" class="icon-button" type="button" disabled data-i18n-aria-label="ADJUST" data-i18n-title="ADJUST">
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M4 20h4L19 9a2.83 2.83 0 0 0-4-4L4 16Z"/>
@@ -330,7 +344,7 @@
         </button>
       </div>
       <div class="compare-viewport" id="compare-viewport">
-        <img id="compare-after" alt="">
+        <canvas id="compare-after" role="img"></canvas>
         <div class="compare-before" id="compare-before-clip">
           <canvas id="compare-before" role="img"></canvas>
         </div>
@@ -357,6 +371,20 @@
     <dialog class="adjust-dialog" id="adjust-dialog">
       <div class="adjust-head">
         <h2 data-i18n="ADJUST_TITLE">Adjust image</h2>
+        <div class="history-actions">
+          <button id="adjust-undo" class="icon-button" type="button" disabled data-i18n-aria-label="UNDO" data-shortcut="undo">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M9 14 4 9l5-5"/>
+              <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>
+            </svg>
+          </button>
+          <button id="adjust-redo" class="icon-button" type="button" disabled data-i18n-aria-label="REDO" data-shortcut="redo">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m15 14 5-5-5-5"/>
+              <path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>
+            </svg>
+          </button>
+        </div>
         <button id="adjust-close" class="icon-button" type="button" data-i18n-aria-label="CLOSE" data-i18n-title="CLOSE">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="m6 6 12 12M18 6 6 18"/>
@@ -432,6 +460,11 @@
           <output id="saturation-value" for="saturation">0</output>
         </label>
         <h3 class="adjust-group" data-i18n="ADJUST_GROUP_DETAIL">Detail</h3>
+        <label class="setting setting--range">
+          <span class="field-label" data-i18n="NOISE_LABEL">Noise reduction</span>
+          <input id="noise" type="range" min="0" max="100" step="1" value="0">
+          <output id="noise-value" for="noise">0</output>
+        </label>
         <label class="setting setting--range">
           <span class="field-label" data-i18n="CLARITY_LABEL">Clarity</span>
           <input id="clarity" type="range" min="-100" max="100" step="1" value="0">

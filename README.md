@@ -8,7 +8,9 @@ runs locally in the browser — no upload, no server.
 
 ## Features
 
-- Preview, crop and convert HDR images to SDR, side by side.
+- Preview, crop and convert HDR images to SDR, side by side. A crop applies as
+  soon as you press **Done**, with no need to convert again, and stays visible
+  on the source as the kept area.
 - Crop ratio locked to the original aspect ratio by default, so the result keeps
   the proportions of the source. Free, 1:1, 16:9, 4:3 and 3:2 are also available.
 - Faithful by default: every tone that an SDR screen can show is reproduced at
@@ -21,16 +23,20 @@ runs locally in the browser — no upload, no server.
   image inside the panel, with the tools photo editors lead with:
   - **Light**: exposure, contrast, highlights, shadows, white point, black point
   - **Color**: temperature, tint, vibrance, saturation
-  - **Detail**: clarity, sharpness
+  - **Detail**: noise reduction, clarity, sharpness
   - **Effects**: vignette
 
-  Every one is neutral by default, and an untouched conversion is
-  byte-for-byte what it was without the panel. A double-click resets any
-  slider, and converting again starts from the faithful result.
+  Edits belong to each image: a new image starts from the defaults, and every
+  image keeps its own values, and its own history, however often you switch
+  between them or convert again. Every control is neutral by default, and an
+  untouched conversion is byte-for-byte what it was without the panel. A
+  double-click resets any slider.
 
-  Click the panel's picture to see it without your edits for three seconds,
-  or hold it to keep it that way until you let go (Space or Enter work too).
+  Click the panel's picture to see it without your edits for a moment, or
+  hold it to keep it that way until you let go (Space or Enter work too).
   It is the same conversion, at full size, with only the edits taken away.
+- Undo and redo for each image's edits and crops, with buttons and with
+  Ctrl+Z / Ctrl+Y (⌘Z / ⇧⌘Z on a Mac). A slider drag is one step.
 - A before/after view with a draggable wipe, comparing the converted file
   against the way your device already renders the HDR original. The drag is
   pointer-based and works the same with a finger as with a mouse, and it only
@@ -41,12 +47,16 @@ runs locally in the browser — no upload, no server.
 - JPEG, PNG or WebP output with an optional size limit. JPEG is 8-bit sRGB with
   an embedded sRGB profile, for WhatsApp, Instagram and the web; PNG is 16-bit
   sRGB, uncompressed, for archiving everything the tone curve produced.
-- The result preview *is* the encoded file, so downloading it, right-clicking it
-  or opening it in a new tab all give you the same image.
+- The picture you edit is kept lossless and full size. The format, quality
+  and size limit are applied only when you download it (or open it in a new
+  tab), so editing never compresses anything and there is no generational
+  loss however many changes you make.
 - English and Spanish interface with a persistent light/dark theme.
 - Multi-file queue: load several images, convert them all with the same
   settings and download them individually or in one go. The round trash
-  button on each thumbnail takes that one image out of the list.
+  button on each thumbnail takes that one image out of the list. Conversions
+  run in parallel in background workers, so the page never freezes (see
+  [Performance](#performance)).
 
 ## How the conversion works
 
@@ -81,8 +91,9 @@ zscale=p=bt709,tonemap=tonemap=mobius:desat=2,zscale=t=bt709:m=bt709:r=tv" outpu
    `libavfilter/vf_tonemap.c`. Either way the curve is applied to the brightest
    component and the others are scaled with it, so hues stay put.
 6. **Encode.** Back to sRGB, then the display-referred adjustments from the
-   pencil panel if any are set, cropped, optionally resized, then
-   JPEG/PNG/WebP. PNG is written at 16 bits per channel straight from the
+   pencil panel if any are set. That is the working picture, kept lossless and
+   full size. Only on download is it resized, if a limit is set, and written
+   as JPEG, PNG or WebP. PNG is written at 16 bits per channel straight from the
    pipeline; JPEG and WebP go through the browser's 8-bit encoder.
 
 The ported maths is covered by a reference test: a plain sRGB PNG round-trips
@@ -174,20 +185,30 @@ frame, so they cannot drift apart.
 — the expensive part, and the part that does not depend on any of these
 controls — so `renderPreview` only has to redo the gain, the gamut matrix, the
 curve, the sRGB encode and the grade: around 50 ms for a 2560×1440 image.
-While you drag, the pane shows that canvas; when you let go the file is
-re-encoded at full resolution and the preview becomes the real file again.
+While you drag, the pane shows that canvas; when you let go, a worker renders
+the full-size working picture and it replaces the preview. Nothing is
+compressed at that point: the file is only written when you download.
 
 **Click or hold the picture to compare.** A click shows the image without
-the edits for three seconds; clicking again during that time returns at once,
+the edits for a moment; clicking again during that time returns at once,
 and holding keeps the unedited image for as long as the press lasts. It is the
 conversion the result on screen was made with — the settings are recorded with
 the result, so changing the tone curve afterwards, without converting, does not
 change what the comparison shows — rendered at full size, because a reduced
 "before" would look softer than the full-size result and credit a Sharpness or
-Clarity edit with detail that is really resolution. That render runs in the
-background when the panel opens, once per conversion, and steps aside while an
-edit is being encoded; until it is ready a press shows a stand-in from the
-preview buffer.
+Clarity edit with detail that is really resolution. That render runs in a
+worker when the panel opens, once per conversion and crop, at the lowest
+priority, so it never delays an edit; until it is ready a press shows a
+stand-in from the preview buffer.
+
+**Undo and redo** are per image. A step is everything about the image you
+can change — its edits and its crop — captured when a change starts and
+recorded when it ends: a slider drag, a double-click reset, "Reset
+adjustments", applying, resetting or re-fitting a crop. A double-click folds
+the first click's move into the reset, so one Undo brings the old value
+back. In crop mode, an unapplied selection is undone first. The shortcuts
+are left alone inside text fields, and on a Mac ⌘Y keeps opening the
+browser's history when there is nothing to redo.
 
 **Double-click any slider to reset it** — to 0 for the adjustments, and to its
 own default for settings like quality. The neutral position is read from the
@@ -199,8 +220,9 @@ the measurement the preview exposed from, so nothing can shift under you when
 you stop dragging. The preview takes two shortcuts the file does not: it
 encodes with a tabulated sRGB curve (within about 0.005/255 of the exact one,
 and three powers per pixel had been over half the cost of a frame), and it
-runs sharpening at its own, smaller scale, so sharpness is approximate while
-you drag. Letting go re-encodes the file exactly and shows that.
+runs noise reduction, clarity and sharpening at its own, smaller scale, so they
+are approximate while you drag. Letting go renders the exact full-size picture
+and shows that.
 
 | Control | Where it acts |
 | --- | --- |
@@ -212,6 +234,7 @@ you drag. Letting go re-encodes the file exactly and shows that.
 | Vibrance | Saturation weighted by how muted a colour is (1 − HSV saturation): a dull sky gains colour long before a vivid sign turns garish. |
 | Saturation | Distance from grey, around the graded luminance. |
 | Vignette | Linear display light, as a smooth falloff that follows the frame (crop included). Darkening multiplies, as a lens does; lightening mixes toward white so it cannot clip. |
+| Noise reduction | A guided filter (He, Sun and Tang) on luminance and on the two colour-difference channels, at the saved resolution, before clarity and sharpening so they do not sharpen the noise back. Luminance is its own guide, so variations under ~9/255 at 100 are flattened while edges and texture pass through; colour is guided by luminance, so a colour edge that lines up with a brightness edge stays put while blotchy colour noise over flat areas is averaged away. Brightness is preserved exactly. On a synthetic noisy grey at 100: luminance noise ×0.17, colour noise ×0.08. |
 | Clarity | Edge-aware local contrast in the midtones: the detail above a guided-filter base layer (He and Sun's fast guided filter, radius 1.2% of the diagonal), weighted away from black and white. Strong outlines barely move — a hard edge that a plain unsharp mask of the same radius would halo by ~89/255 moves by 4/255. |
 | Sharpness | An unsharp mask on luminance (σ = 1 px, up to 150%) applied last, at the saved resolution — before a downscale it would mostly be averaged away. Differences under 0.5/255 are left alone, so 8-bit steps in a dark gradient are not turned into texture. |
 
@@ -219,8 +242,8 @@ Temperature and tint act on light, so they sit with exposure ahead of the tone
 curve. The tonal and colour controls are display-referred and run *after* tone
 mapping, on the sRGB-encoded signal, because that is the domain they are
 named for: "shadows" and a black point are statements about where tones land
-on the final display, not about scene light. Clarity and sharpness need their
-neighbours, so they run last, over the finished image.
+on the final display, not about scene light. Noise reduction, clarity and
+sharpness need their neighbours, so they run last, over the finished image.
 
 Clarity and sharpness change brightness locally but add the same amount to
 all three channels, so they do not shift colours or draw coloured fringes.
@@ -235,9 +258,11 @@ The lobe width is what makes those two controls honest. A gentle
 "shadows" a midtone control wearing a disguise; `x²(1-x)⁶` leaks about 1/255
 there, while still moving its own zone by 38/255 at the extreme.
 
-These adjust the result you are looking at rather than being settings, so
-pressing **Convert** returns them all to neutral. **Restore defaults**, at the
-end of the settings row, puts every control back to the recommended baseline.
+These belong to the image, not to the settings: **Convert** changes the
+conversion underneath them and keeps them, and **Restore defaults**, at the
+end of the settings row, resets the shared settings and leaves every image's
+edits alone. **Reset adjustments** in the panel puts one image back to
+neutral.
 
 ## Settings
 
@@ -251,13 +276,13 @@ end of the settings row, puts every control back to the recommended baseline.
 | Output format / quality | JPEG, 92 | JPEG: 8-bit sRGB with an embedded sRGB profile. PNG: 16-bit sRGB (`sRGB` chunk), uncompressed, keeps alpha — about 22 MB for 2560×1440. |
 | Read source as | Auto | Override when a file has wrong or missing HDR tagging. |
 | Curve parameter | Standard value | BT.2390's knee offset (0.5), or `tonemap`'s `param` (0.3 for mobius, 1.8 for gamma, …). |
-| Limit longest side | Original | Optional downscale; the aspect ratio is preserved. |
+| Limit longest side | Original | Optional downscale, applied to the downloaded file; the picture you edit stays full size. The aspect ratio is preserved. |
 
 The pencil icon under the result opens the per-image adjustments: light
 (exposure, contrast, highlights, shadows, white and black point), colour
-(temperature, tint, vibrance, saturation), detail (clarity, sharpness) and a
-vignette. All are neutral by default, so they change nothing until you move
-them, and **Convert** returns them to neutral. See
+(temperature, tint, vibrance, saturation), detail (noise reduction, clarity,
+sharpness) and a vignette. All are neutral by default, so they change nothing
+until you move them, and each image keeps its own. See
 [Adjusting it by eye](#adjusting-it-by-eye).
 
 ## Browser support
@@ -265,6 +290,11 @@ them, and **Convert** returns them to neutral. See
 Accurate conversion needs WebCodecs `ImageDecoder`, available in Chrome and
 Edge. Other browsers fall back to the image the browser already converted, and
 the app says so in the note under the preview.
+
+Conversions run in module Web Workers where the browser has them. Where it does
+not, or if the worker script cannot load (the page opened from `file://`, say),
+the same code runs on the main thread instead and produces identical files,
+only without the parallelism.
 
 ## Run locally
 
@@ -276,10 +306,36 @@ python3 -m http.server 8000
 
 Then open <http://localhost:8000>. There is no build step and no dependency.
 
-## Bulk editing
+## Performance
 
-`src/pipeline.js` is stateless and exposes `convertAll(items, settings)`, and the
-app already holds images in a queue, so a full bulk mode only needs UI work.
+Measured with twelve 2560×1440 10-bit AVIFs, against the previous release:
+
+| | before | now |
+| --- | --- | --- |
+| Load 12 images | 4.1 s | 1.5 s (three decode at once) |
+| Switch between images | 290–350 ms, page frozen | 33 ms, never frozen |
+| Convert all 12 | 4.5 s, page frozen 1.2 s | 1.1–1.4 s, never frozen |
+| Apply an edit (full size) | 340 ms, page frozen | ~260 ms, in the background |
+| Live preview frame | 51 ms | 51 ms |
+
+Switching was slow because the list was rebuilt on every click, and each
+thumbnail was an `<img>` of the full-size file: the browser decoded about two
+seconds' worth of 2560×1440 AVIFs per click to draw 84 px thumbnails. Each image
+now has one small thumbnail canvas, drawn once, and the list is updated in
+place. The source pane's picture is decoded before it is swapped in, rather
+than decoded synchronously in the middle of a frame.
+
+Conversions and full-size edit renders run in a pool of workers (`src/pool.js`,
+`src/worker.js`), several images at once, with the edit you just made always
+ahead of batch and background work. Each worker keeps the source it last
+worked on, so repeated renders of the image being edited do not copy its
+22 MB of samples again. Full-size working pictures are kept within a memory
+budget (about twenty such images), least recently viewed dropped first, and
+the editor-only caches are kept for the selected image alone; overall memory
+is within a few percent of the previous release.
+
+`src/pipeline.js` is stateless, and `src/jobs.js` holds the work a job does, so
+the main-thread fallback and the workers run the very same code.
 
 ## Credits
 
