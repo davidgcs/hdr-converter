@@ -37,6 +37,10 @@ runs locally in the browser — no upload, no server.
   It is the same conversion, at full size, with only the edits taken away.
 - Undo and redo for each image's edits and crops, with buttons and with
   Ctrl+Z / Ctrl+Y (⌘Z / ⇧⌘Z on a Mac). A slider drag is one step.
+- Zoom in the editor and in the before/after view, up to 800% of actual size:
+  scroll or pinch to zoom where you point, drag to move around, or use the
+  bar under the picture (the percentage switches between fit and 100%). See
+  [Zoom](#zoom).
 - A before/after view with a draggable wipe, comparing the converted file
   against the way your device already renders the HDR original. The drag is
   pointer-based and works the same with a finger as with a mouse, and it only
@@ -173,6 +177,37 @@ browser output matches an independent Python/libavif implementation to within
 
 The **Exposure** slider composes on top of any mode, so `+1` is one stop above
 it.
+
+### Zoom
+
+Both the editor and the before/after view zoom from fit to the window up to
+800% of actual size, where **100% is one image pixel per device pixel** — on a
+Retina screen that is half as many CSS pixels — so it shows what sharpening
+and noise reduction really do. Scroll or pinch over the picture to zoom about
+the point you are on, drag to move around, use the bar under the picture
+(−, the percentage, +), or the keys + and −, 0 (fit) and 1 (100%). The picture
+can never be dragged off into empty space, and it opens fit every time.
+
+Zooming only sets a transform: nothing is laid out or repainted, the
+compositor scales the full-size picture as a texture. A 20-step pan measures
+0 layouts and 0 raster tasks. The zoom is kept in image terms, so it does not
+jump when the editor swaps its half-size live frame for the full-size picture,
+or when the window is resized.
+
+In the **editor**, pressing the picture still shows it without your edits, and
+now also pans. Holding still shows the unedited picture; moving pans. Zoomed
+in, a press waits 150 ms before showing the unedited picture, so that a pan
+never flashes it; so does a finger on a touch screen, in case a second finger
+joins it for a pinch.
+
+In the **comparison** both pictures take the very same transform, while the
+line and the labels do not zoom, so the line stays where it is on screen and
+the two pictures move under it together. Measured, they stay aligned to within
+0.0001 px, and left of the line is exactly the original and right of it
+exactly the result, at 91%, after panning and at 800%. Not zoomed, it works as
+it always has. Zoomed in, drag the line to compare, drag anywhere else to move
+around, and click to move the line there. A pinch that starts with one finger
+on the picture puts the line back where that finger found it.
 
 ### Adjusting it by eye
 
