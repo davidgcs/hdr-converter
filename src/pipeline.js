@@ -413,8 +413,24 @@ export function resolveAdaptation(settings, scene, transfer) {
   return Math.max(MIN_ADAPTATION, Math.min(MAX_ADAPTATION, DIFFUSE_TARGET / diffuse));
 }
 
+/**
+ * Lets the browser handle input and paint between bands of a conversion.
+ *
+ * A MessageChannel round trip is a full task with no minimum delay. setTimeout
+ * would do too, except that browsers clamp it to 4 ms once it has been nested
+ * five deep, which it always is here: fifteen bands then idled ~40–60 ms per
+ * conversion for nothing.
+ */
+const yieldChannel = typeof MessageChannel === "function" ? new MessageChannel() : null;
+const yieldQueue = [];
+if (yieldChannel) yieldChannel.port1.onmessage = () => yieldQueue.shift()?.();
+
 function yieldToBrowser() {
-  return new Promise((resolve) => setTimeout(resolve, 0));
+  if (!yieldChannel) return new Promise((resolve) => setTimeout(resolve, 0));
+  return new Promise((resolve) => {
+    yieldQueue.push(resolve);
+    yieldChannel.port2.postMessage(0);
+  });
 }
 
 /** Scratch for the encode below; single-threaded, so one instance is enough. */
@@ -641,7 +657,7 @@ function balanceWhite(rgb, balance) {
  *
  * @returns {Promise<{imageData: ImageData, pixels16: Uint16Array|null, peak: number, transfer: string, primaries: string}>}
  */
-export async function convert(source, settings, crop, { onProgress, signal, scene: measured } = {}) {
+export async function convert(source, settings, crop, { onProgress, signal, scene: measured, cooperative = true } = {}) {
   const options = { ...DEFAULT_SETTINGS, ...settings };
   const area = normalizeCrop(source, crop);
   const { transfer, primaries, matrix } = transferOf(source, options);
@@ -714,7 +730,8 @@ export async function convert(source, settings, crop, { onProgress, signal, scen
     }
 
     onProgress?.(bandEnd / area.height);
-    await yieldToBrowser();
+    // A worker has no page to keep responsive, so it runs straight through.
+    if (cooperative) await yieldToBrowser();
   }
 
   return {
@@ -727,7 +744,9 @@ export async function convert(source, settings, crop, { onProgress, signal, scen
     curvePeak: peak,
     gain,
     transfer,
-    primaries
+    primaries,
+    // So later renders of the same crop can skip measuring it again.
+    scene
   };
 }
 

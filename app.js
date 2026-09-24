@@ -2,15 +2,15 @@ import { createTranslator, translations } from "./src/i18n.js";
 import { decodeFile, supportsWebCodecs } from "./src/decode.js";
 import {
   DEFAULT_SETTINGS,
-  convert,
+  canvasToBlob,
   encodeResult,
   normalizeCrop,
-  prepareScene,
   renderPreview,
   toCanvas
 } from "./src/pipeline.js";
 import { REFERENCE_WHITE } from "./src/colorspace.js";
 import { GRADE_DEFAULTS, GRADE_KEYS } from "./src/grade.js";
+import { PRIORITY, createPool } from "./src/pool.js";
 
 const STORAGE_KEYS = {
   language: "hdr-converter-language",
@@ -20,6 +20,18 @@ const STORAGE_KEYS = {
 
 const MIN_CROP_PX = 16;
 const EXTENSIONS = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
+const FORMAT_NAMES = { "image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WebP" };
+/** Thumbnails in the list are drawn at twice their 84 px CSS width. */
+const THUMB_WIDTH = 168;
+/**
+ * Full-size working images are kept in memory for this many bytes in total
+ * (about twenty 2560×1440 pictures). Beyond it the least recently viewed are
+ * dropped and re-rendered from their source when needed again.
+ */
+const RENDER_BUDGET = 320e6;
+const HISTORY_LIMIT = 100;
+
+const pool = createPool();
 
 const elements = {
   metaDescription: document.querySelector("#meta-description"),
@@ -41,7 +53,7 @@ const elements = {
   overlay: document.querySelector("#crop-overlay"),
   resultEmpty: document.querySelector("#result-empty"),
   resultPage: document.querySelector("#result-page"),
-  resultImage: document.querySelector("#result-image"),
+  resultCanvas: document.querySelector("#result-canvas"),
   resultPreview: document.querySelector("#result-preview"),
   resultNote: document.querySelector("#result-note"),
   stageActions: document.querySelector("#stage-actions"),
@@ -52,6 +64,10 @@ const elements = {
   adjustCanvas: document.querySelector("#adjust-canvas"),
   adjustPreview: document.querySelector("#adjust-preview"),
   adjustPeekTag: document.querySelector("#adjust-peek-tag"),
+  undo: document.querySelector("#undo"),
+  redo: document.querySelector("#redo"),
+  adjustUndo: document.querySelector("#adjust-undo"),
+  adjustRedo: document.querySelector("#adjust-redo"),
   compare: document.querySelector("#compare"),
   compareDialog: document.querySelector("#compare-dialog"),
   compareClose: document.querySelector("#compare-close"),
@@ -88,6 +104,7 @@ const elements = {
   temperature: document.querySelector("#temperature"),
   tint: document.querySelector("#tint"),
   vibrance: document.querySelector("#vibrance"),
+  noise: document.querySelector("#noise"),
   clarity: document.querySelector("#clarity"),
   sharpness: document.querySelector("#sharpness"),
   vignette: document.querySelector("#vignette"),
@@ -102,6 +119,9 @@ const state = {
   items: [],
   activeId: null,
   cropMode: false,
+  /** The selection being drawn in crop mode; only becomes the image's crop on "Done". */
+  cropDraft: null,
+  statusBeforeCrop: null,
   processing: false,
   aspect: "original"
 };
@@ -134,6 +154,7 @@ const TIPS = {
   temperature: "TIP_TEMPERATURE",
   tint: "TIP_TINT",
   vibrance: "TIP_VIBRANCE",
+  noise: "TIP_NOISE",
   clarity: "TIP_CLARITY",
   sharpness: "TIP_SHARPNESS",
   vignette: "TIP_VIGNETTE",
@@ -285,8 +306,10 @@ function applyLanguage(language) {
 
   updateThemeControl();
   // The list's remove buttons are named after their files, so they are
-  // rebuilt rather than re-labelled from a fixed key.
-  renderQueue();
+  // re-labelled here rather than from a fixed key.
+  syncQueue();
+  labelHistoryButtons();
+  updateResultNote();
   updateControls();
   updateSourceNote();
   setStatus(state.status.key, state.status.params);
@@ -318,10 +341,22 @@ function setBusy(isBusy) {
 
 /* ---------------------------------------------------------------- settings */
 
-/** The adjust panel's controls, keyed exactly as the pipeline expects them. */
-function readGrade() {
-  return Object.fromEntries(GRADE_KEYS.map((key) => [key, Number(elements[key].value)]));
-}
+/*
+ * Two kinds of settings live in the panel, and a third kind in the editor.
+ *
+ * The conversion settings — tone curve, brightness, peak, desaturation, how
+ * to read the source — are shared by every image and take effect when you
+ * press Convert. The export settings — format, quality, size limit — only
+ * take effect when a file is written: the picture being edited stays
+ * lossless and full size until then.
+ *
+ * The editor's adjustments are neither. They belong to one image
+ * (item.edits), so the sliders always show the selected image's values, a new
+ * image starts from the defaults, and each image keeps its own.
+ */
+const TONE_KEYS = ["algorithm", "param", "desat", "brightness", "peakMode", "peakNits", "inputOverride"];
+const EDIT_KEYS = Object.freeze(["exposure", ...GRADE_KEYS]);
+const EDIT_DEFAULTS = Object.freeze({ exposure: 0, ...GRADE_DEFAULTS });
 
 function readSettings() {
   const param = elements.param.value.trim();
@@ -332,13 +367,20 @@ function readSettings() {
     brightness: elements.brightness.value,
     peakMode: elements.peakMode.value,
     peakNits: Number(elements.peakNits.value) || DEFAULT_SETTINGS.peakNits,
-    exposure: Number(elements.exposure.value),
-    ...readGrade(),
     inputOverride: elements.inputOverride.value,
     outputFormat: elements.format.value,
     quality: Number(elements.quality.value) / 100,
     maxDimension: Number(elements.maxDimension.value)
   };
+}
+
+function toneOf(settings) {
+  return Object.fromEntries(TONE_KEYS.map((key) => [key, settings[key]]));
+}
+
+function exportSettings() {
+  const { outputFormat, quality, maxDimension } = readSettings();
+  return { outputFormat, quality, maxDimension };
 }
 
 function writeSettings(settings) {
@@ -348,13 +390,25 @@ function writeSettings(settings) {
   elements.brightness.value = settings.brightness;
   elements.peakMode.value = settings.peakMode;
   elements.peakNits.value = settings.peakNits;
-  elements.exposure.value = settings.exposure;
-  for (const key of GRADE_KEYS) elements[key].value = settings[key] ?? 0;
   elements.inputOverride.value = settings.inputOverride;
   elements.format.value = settings.outputFormat;
   elements.quality.value = Math.round(settings.quality * 100);
   elements.maxDimension.value = String(settings.maxDimension);
   updateSettingVisibility();
+}
+
+/** The editor's sliders, as the selected image's edits. */
+function readEdits() {
+  return Object.fromEntries(EDIT_KEYS.map((key) => [key, Number(elements[key].value)]));
+}
+
+function writeEdits(edits) {
+  for (const key of EDIT_KEYS) elements[key].value = String(edits[key] ?? EDIT_DEFAULTS[key]);
+  updateSettingVisibility();
+}
+
+function isNeutralEdits(edits) {
+  return EDIT_KEYS.every((key) => !Number(edits[key]));
 }
 
 /**
@@ -363,6 +417,9 @@ function writeSettings(settings) {
  * quality, size limit and crop ratio — because a stored tone curve or
  * brightness mode from back when it was the default is indistinguishable from
  * a deliberate choice, and restoring it would silently keep the old look.
+ *
+ * Edits are never saved: they belong to an image, and a new image has to
+ * start from the defaults.
  */
 const SETTINGS_VERSION = 2;
 const RETIRED_ON_UPGRADE = ["algorithm", "param", "desat", "brightness", "exposure"];
@@ -403,19 +460,7 @@ function updateSettingVisibility() {
   for (const key of GRADE_KEYS) {
     document.querySelector(`#${key}-value`).textContent = elements[key].value;
   }
-  elements.adjustReset.disabled = isNeutralAdjust();
-}
-
-/** True when the adjust panel would not change the conversion at all. */
-function isNeutralAdjust() {
-  return !Number(elements.exposure.value) && GRADE_KEYS.every((key) => !Number(elements[key].value));
-}
-
-/** Puts the adjust panel back to the neutral, faithful conversion. */
-function resetAdjust() {
-  elements.exposure.value = "0";
-  for (const key of GRADE_KEYS) elements[key].value = String(GRADE_DEFAULTS[key]);
-  updateSettingVisibility();
+  elements.adjustReset.disabled = isNeutralEdits(readEdits());
 }
 
 /* ------------------------------------------------------------------- items */
@@ -454,8 +499,50 @@ function fullCrop(item) {
   return { x: 0, y: 0, width: item.source.width, height: item.source.height };
 }
 
+/** What the source pane shows as the crop: the draft while cropping, else the applied crop. */
 function currentCrop(item) {
-  return item?.crop ? item.crop : item ? fullCrop(item) : null;
+  if (!item) return null;
+  if (state.cropMode && state.cropDraft && item.id === state.activeId) return state.cropDraft;
+  return item.crop || fullCrop(item);
+}
+
+function isFullCrop(item, rect) {
+  return !rect || (rect.x <= 0.5 && rect.y <= 0.5 && rect.width >= item.source.width - 1 && rect.height >= item.source.height - 1);
+}
+
+function sameCrop(a, b) {
+  return JSON.stringify(a || null) === JSON.stringify(b || null);
+}
+
+/**
+ * The conversion an image was made with. Recorded when it is converted, so
+ * editing it later keeps that conversion even if a shared setting has since
+ * been changed without converting again.
+ */
+function toneSettings(item) {
+  return item?.result?.settings || toneOf(readSettings());
+}
+
+/** Everything that shapes an image's working pixels: its conversion, its edits, full size. */
+function renderSettings(item, edits = item.edits) {
+  return { ...DEFAULT_SETTINGS, ...toneSettings(item), ...edits, outputFormat: "image/jpeg", maxDimension: 0 };
+}
+
+function renderKey(item, edits = item.edits) {
+  return JSON.stringify([toneSettings(item), EDIT_KEYS.map((key) => Number(edits[key]) || 0), item.crop]);
+}
+
+/** Scene statistics and the live-preview buffer depend only on the crop and how the source is read. */
+function sceneKey(item) {
+  return `${JSON.stringify(item.crop)}|${toneSettings(item).inputOverride}`;
+}
+
+function sceneFor(item) {
+  return item.scene?.key === sceneKey(item) ? item.scene.value : undefined;
+}
+
+function rememberScene(item, key, scene) {
+  if (scene) item.scene = { key, value: scene };
 }
 
 /* ------------------------------------------------------------------ layout */
@@ -466,17 +553,25 @@ function overlayScale(item) {
   return rect.width / item.source.width;
 }
 
+/**
+ * Crop mode shows the draft as a selection that can be dragged. Outside it,
+ * an applied crop stays on screen too — the kept area clear, the rest dimmed
+ * — so it is always visible what the result is made of.
+ */
 function renderSelection() {
   const item = activeItem();
-  if (!item || !state.cropMode) {
+  const editing = Boolean(item && state.cropMode);
+  const applied = Boolean(item && !state.cropMode && item.crop);
+  if (!editing && !applied) {
     selection?.root.remove();
     selection = null;
     elements.overlay.classList.remove("crop-mode");
     return;
   }
 
-  elements.overlay.classList.add("crop-mode");
+  elements.overlay.classList.toggle("crop-mode", editing);
   if (!selection) selection = createSelection();
+  selection.root.classList.toggle("crop-applied", applied);
 
   const scale = overlayScale(item);
   const crop = currentCrop(item);
@@ -508,88 +603,203 @@ const TRASH_ICON =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V4h6v3"/>' +
   '<path d="m6 7 1 13h10l1-13"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>';
 
-function renderQueue() {
-  elements.queue.replaceChildren();
-  elements.queue.hidden = state.items.length < 2;
-  if (state.items.length < 2) return;
+const queueEntries = new Map();
 
-  state.items.forEach((item) => {
-    const entry = document.createElement("div");
-    entry.className = "queue-item";
-    entry.setAttribute("role", "listitem");
+function createQueueEntry(item) {
+  const root = document.createElement("div");
+  root.className = "queue-item";
+  root.setAttribute("role", "listitem");
 
-    const select = document.createElement("button");
-    select.type = "button";
-    select.className = "queue-select";
-    select.setAttribute("aria-current", String(item.id === state.activeId));
-    const thumb = document.createElement("img");
-    thumb.src = item.resultUrl || item.previewUrl;
-    thumb.alt = "";
-    const label = document.createElement("span");
-    label.textContent = item.file.name;
-    select.append(thumb, label);
-    select.addEventListener("click", () => setActiveItem(item.id));
+  const select = document.createElement("button");
+  select.type = "button";
+  select.className = "queue-select";
+  const label = document.createElement("span");
+  label.textContent = item.file.name;
+  // The item's own thumbnail canvas: redrawn in place whenever its result
+  // changes, never re-decoded.
+  select.append(item.thumb, label);
+  select.addEventListener("click", () => setActiveItem(item.id));
 
-    // A sibling of the select button rather than a child: a button inside a
-    // button is invalid HTML, and browsers then route its clicks and its
-    // accessible name unpredictably.
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.className = "queue-remove";
-    remove.disabled = state.processing;
+  // A sibling of the select button rather than a child: a button inside a
+  // button is invalid HTML, and browsers then route its clicks and its
+  // accessible name unpredictably.
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "queue-remove";
+  remove.innerHTML = TRASH_ICON;
+  remove.addEventListener("click", () => removeItem(item.id));
+
+  root.append(select, remove);
+  const entry = { root, select, remove };
+  queueEntries.set(item.id, entry);
+  return entry;
+}
+
+/**
+ * Brings the list in line with state.items, updating entries in place.
+ *
+ * It used to be rebuilt on every click, and every thumbnail was an <img> of
+ * the full-size file: with a dozen images, each click made the browser decode
+ * about two seconds' worth of 2560×1440 AVIFs to draw 84 px thumbnails. Now
+ * each image gets one small thumbnail canvas, and a click only moves the
+ * "current" marker.
+ */
+function syncQueue() {
+  for (const [id, entry] of queueEntries) {
+    if (!state.items.some((item) => item.id === id)) {
+      entry.root.remove();
+      queueEntries.delete(id);
+    }
+  }
+  const show = state.items.length >= 2;
+  elements.queue.hidden = !show;
+  if (!show) return;
+  state.items.forEach((item, index) => {
+    const entry = queueEntries.get(item.id) || createQueueEntry(item);
+    const at = elements.queue.children[index];
+    if (at !== entry.root) elements.queue.insertBefore(entry.root, at || null);
+    entry.select.setAttribute("aria-current", String(item.id === state.activeId));
+    entry.remove.disabled = state.processing;
     const name = translate("QUEUE_REMOVE", { name: item.file.name });
-    remove.setAttribute("aria-label", name);
-    remove.title = name;
-    remove.innerHTML = TRASH_ICON;
-    remove.addEventListener("click", () => removeItem(item.id));
-
-    entry.append(select, remove);
-    elements.queue.append(entry);
+    if (entry.remove.title !== name) {
+      entry.remove.title = name;
+      entry.remove.setAttribute("aria-label", name);
+    }
   });
 }
 
+/**
+ * Resolves once the selected image's source is on screen, for anything that
+ * draws from it (the compare view's "before").
+ */
+let sourceShown = Promise.resolve();
+let sourceToken = 0;
+
+/**
+ * Shows the selected image's original in the source pane.
+ *
+ * The file is decoded before it is swapped in. Setting the new src directly
+ * made the browser decode the full-size picture synchronously, holding up the
+ * frame — about 250 ms of a frozen page per click for a 2560×1440 AVIF,
+ * since the decoded-image cache only holds a few of them. Meanwhile the
+ * previous picture stays, dimmed.
+ */
 function renderSource() {
   const item = activeItem();
   elements.sourceEmpty.hidden = Boolean(item);
   elements.sourcePage.hidden = !item;
+  const token = ++sourceToken;
   if (!item) {
     elements.sourceImage.removeAttribute("src");
+    elements.sourcePage.classList.remove("is-loading");
+    sourceShown = Promise.resolve();
     renderSelection();
     return;
   }
-  if (elements.sourceImage.getAttribute("src") !== item.previewUrl) {
-    elements.sourceImage.src = item.previewUrl;
-    elements.sourceImage.alt = item.file.name;
+  if (elements.sourceImage.getAttribute("src") === item.previewUrl) {
+    elements.sourcePage.classList.remove("is-loading");
+    renderSelection();
+    return;
   }
+  elements.sourcePage.classList.add("is-loading");
+  const next = new Image();
+  next.src = item.previewUrl;
+  sourceShown = next
+    .decode()
+    .catch(() => {})
+    .then(() => {
+      if (token !== sourceToken) return;
+      elements.sourceImage.src = item.previewUrl;
+      elements.sourceImage.alt = item.file.name;
+      elements.sourcePage.classList.remove("is-loading");
+      renderSelection();
+    });
   renderSelection();
 }
 
+/** Which render the result canvas currently holds, so it is only redrawn when that changes. */
+let shownRender = null;
+
 function renderResult() {
   const item = activeItem();
-  const result = item?.result || null;
-  const ready = Boolean(result) && !state.processing;
-  elements.resultEmpty.hidden = Boolean(result);
-  elements.resultPage.hidden = !result;
+  const converted = Boolean(item?.result);
+  const ready = converted && !state.processing;
+  elements.resultEmpty.hidden = converted;
+  elements.resultPage.hidden = !converted;
   elements.download.disabled = !ready;
   elements.openTab.disabled = !ready;
   elements.compare.disabled = !ready;
   elements.adjust.disabled = !ready;
-
-  if (!result) {
-    elements.resultNote.textContent = "";
-    elements.resultImage.removeAttribute("src");
+  updateResultNote();
+  if (!converted) {
+    shownRender = null;
     return;
   }
 
-  // Show the encoded file itself, so "Save image as" and the Download button
-  // hand over exactly the same bytes, format and dimensions.
-  elements.resultImage.hidden = false;
-  elements.resultPreview.hidden = true;
-  elements.resultImage.src = item.resultUrl;
-  elements.resultImage.alt = outputName(item);
-  elements.resultNote.textContent = `${result.canvas.width}×${result.canvas.height} · ${Math.round(
-    result.blob.size / 1024
-  )} kB`;
+  if (item.render) {
+    showRender(item);
+  } else if (shownRender?.item !== item) {
+    // Its full-size picture was let go to save memory: show the thumbnail,
+    // scaled up, until the re-render lands a moment later.
+    const canvas = elements.resultCanvas;
+    canvas.width = item.thumb.width;
+    canvas.height = item.thumb.height;
+    canvas.getContext("2d").drawImage(item.thumb, 0, 0);
+    canvas.hidden = false;
+    elements.resultPreview.hidden = true;
+    shownRender = { item, placeholder: true };
+  }
+  if (item.render?.key !== renderKey(item)) requestRender(item).catch(reportError);
+}
+
+/**
+ * Puts an image's working picture on the result canvas: the lossless,
+ * full-size pixels, not a compressed file. Formats and quality only apply
+ * when it is downloaded.
+ */
+function showRender(item) {
+  const render = item.render;
+  if (!render || item !== activeItem()) return;
+  const canvas = elements.resultCanvas;
+  if (shownRender?.render !== render) {
+    canvas.width = render.width;
+    canvas.height = render.height;
+    canvas.getContext("2d").putImageData(render.imageData, 0, 0);
+    shownRender = { item, render };
+  }
+  canvas.setAttribute("aria-label", outputName(item, exportSettings().outputFormat));
+  // A live preview on top stays until the full render catches up with it.
+  if (render.key === renderKey(item)) {
+    canvas.hidden = false;
+    elements.resultPreview.hidden = true;
+    paintAdjustPreview(render.imageData);
+  } else if (elements.resultPreview.hidden) {
+    canvas.hidden = false;
+  }
+  updateResultNote();
+}
+
+function formatLabel(item) {
+  const { outputFormat, quality, maxDimension } = exportSettings();
+  const name = FORMAT_NAMES[outputFormat] || "JPEG";
+  let label = outputFormat === "image/png" ? translate("FORMAT_PNG_16") : `${name} ${Math.round(quality * 100)}%`;
+  const crop = normalizeCrop(item.source, item.crop);
+  if (maxDimension && Math.max(crop.width, crop.height) > maxDimension) label += `, ${maxDimension} px`;
+  return label;
+}
+
+function updateResultNote() {
+  const item = activeItem();
+  if (!item?.result) {
+    elements.resultNote.textContent = "";
+    return;
+  }
+  const crop = normalizeCrop(item.source, item.crop);
+  elements.resultNote.textContent = translate("RESULT_NOTE", {
+    width: crop.width,
+    height: crop.height,
+    format: formatLabel(item)
+  });
 }
 
 function formatRatio(width, height) {
@@ -645,7 +855,7 @@ function updateControls() {
 
   elements.convert.disabled = !hasItems || busy;
   elements.crop.disabled = !item || busy;
-  elements.cropReset.disabled = !item || busy || !item.crop;
+  elements.cropReset.disabled = !item || busy || (!state.cropMode && !item.crop);
   elements.clear.disabled = !hasItems || busy;
   elements.file.disabled = busy;
   elements.addFiles.disabled = busy;
@@ -661,18 +871,102 @@ function updateControls() {
 
   elements.crop.textContent = translate(state.cropMode ? "CROP_DISABLE" : "CROP_ENABLE");
   elements.crop.setAttribute("aria-pressed", String(state.cropMode));
+  updateHistoryButtons();
 }
 
 function setActiveItem(id) {
+  const previous = activeItem();
+  // Switching images while cropping keeps the selection, as "Done" would.
+  if (previous && state.cropMode && previous.id !== id) applyCropDraft(previous, { quiet: true });
+  if (previous) finishGesture(previous);
+
   state.activeId = id;
+  const item = activeItem();
+  if (item) touch(item);
+  endPeek();
+  trimCaches(item, previous);
+  writeEdits(item ? item.edits : EDIT_DEFAULTS);
+
   renderSource();
   renderResult();
-  renderQueue();
+  updateRenderBusy();
+  syncQueue();
   updateSourceNote();
   updateControls();
+  // Have the live-preview buffer ready before the first slider moves.
+  if (item?.result) requestPrepared(item, PRIORITY.background).catch(() => {});
 }
 
 /* ------------------------------------------------------------------ loading */
+
+/**
+ * A small thumbnail for the list, drawn once from the file and replaced by
+ * the converted picture when there is one.
+ */
+function createThumb(file, source) {
+  const canvas = document.createElement("canvas");
+  canvas.width = THUMB_WIDTH;
+  canvas.height = Math.max(1, Math.round((THUMB_WIDTH * source.height) / source.width));
+  createImageBitmap(file, { resizeWidth: canvas.width, resizeHeight: canvas.height, resizeQuality: "medium" })
+    .then((bitmap) => {
+      if (!canvas.dataset.converted) canvas.getContext("2d").drawImage(bitmap, 0, 0);
+      bitmap.close();
+    })
+    .catch(() => {
+      // The thumbnail is cosmetic; a format the browser cannot preview just stays blank.
+    });
+  return canvas;
+}
+
+async function refreshThumb(item, render) {
+  const canvas = item.thumb;
+  item.thumbFor = render;
+  const height = Math.max(1, Math.round((THUMB_WIDTH * render.height) / render.width));
+  try {
+    const bitmap = await createImageBitmap(render.imageData, {
+      resizeWidth: THUMB_WIDTH,
+      resizeHeight: height,
+      resizeQuality: "medium"
+    });
+    if (item.thumbFor === render) {
+      canvas.width = THUMB_WIDTH;
+      canvas.height = height;
+      canvas.getContext("2d").drawImage(bitmap, 0, 0);
+      canvas.dataset.converted = "true";
+    }
+    bitmap.close();
+  } catch {
+    // Cosmetic, as above.
+  }
+}
+
+function createItem(file, source) {
+  return {
+    id: nextId++,
+    file,
+    source,
+    previewUrl: URL.createObjectURL(file),
+    thumb: createThumb(file, source),
+    crop: null,
+    // Every image starts from the defaults and keeps its own edits from then on.
+    edits: { ...EDIT_DEFAULTS },
+    history: { undo: [], redo: [] },
+    gestureStart: null,
+    result: null,
+    render: null,
+    pending: null,
+    prepared: null,
+    preparing: null,
+    scene: null,
+    unedited: null,
+    uneditedPreview: null,
+    exported: null,
+    lastUsed: 0
+  };
+}
+
+/** How many files decode at once. Decoding is asynchronous, so a few in flight keep the decoder busy. */
+const DECODE_CONCURRENCY = 3;
 
 async function loadFiles(fileList) {
   const files = Array.from(fileList || []).filter((file) => file.size > 0);
@@ -682,27 +976,32 @@ async function loadFiles(fileList) {
   setStatus("LOADING");
   setProgress(0);
 
-  let loaded = 0;
-  for (const file of files) {
-    try {
-      const source = await decodeFile(file);
-      const item = {
-        id: nextId++,
-        file,
-        source,
-        previewUrl: URL.createObjectURL(file),
-        crop: null,
-        result: null,
-        resultUrl: null
-      };
-      state.items.push(item);
-      state.activeId = item.id;
-      loaded += 1;
-      setProgress(loaded / files.length);
-    } catch (error) {
-      setStatus("DECODE_ERROR", { message: error?.message || String(error) });
+  const decoded = new Array(files.length);
+  let next = 0;
+  let done = 0;
+  const worker = async () => {
+    while (next < files.length) {
+      const index = next++;
+      try {
+        decoded[index] = await decodeFile(files[index]);
+      } catch (error) {
+        decoded[index] = null;
+        setStatus("DECODE_ERROR", { message: error?.message || String(error) });
+      }
+      setProgress(++done / files.length);
     }
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(DECODE_CONCURRENCY, files.length) }, worker));
+
+  // Added in the order they were chosen, whatever order they finished in.
+  let loaded = 0;
+  files.forEach((file, index) => {
+    if (!decoded[index]) return;
+    const item = createItem(file, decoded[index]);
+    state.items.push(item);
+    state.activeId = item.id;
+    loaded += 1;
+  });
 
   setBusy(false);
   setActiveItem(state.activeId);
@@ -722,6 +1021,16 @@ async function loadFiles(fileList) {
   setProgress(0);
 }
 
+/** Lets go of everything an image holds: its jobs, its workers' copies, its object URLs. */
+function releaseItem(item) {
+  item.pending?.job.cancel();
+  item.preparing?.job.cancel();
+  if (peek.job?.item === item) cancelUneditedRender();
+  pool.forget(item.id);
+  URL.revokeObjectURL(item.previewUrl);
+  if (item.exported) URL.revokeObjectURL(item.exported.url);
+}
+
 /**
  * Takes one image out of the list.
  *
@@ -736,10 +1045,11 @@ function removeItem(id) {
   const hadFocus = elements.queue.contains(document.activeElement);
 
   const [item] = state.items.splice(index, 1);
-  // Its preview, its result and its cached scene go with it; only the object
-  // URLs need releasing by hand.
-  URL.revokeObjectURL(item.previewUrl);
-  if (item.resultUrl) URL.revokeObjectURL(item.resultUrl);
+  if (item.id === state.activeId && state.cropMode) {
+    state.cropMode = false;
+    state.cropDraft = null;
+  }
+  releaseItem(item);
 
   if (!state.items.length) {
     clearItems();
@@ -762,13 +1072,11 @@ function removeItem(id) {
 }
 
 function clearItems() {
-  state.items.forEach((item) => {
-    URL.revokeObjectURL(item.previewUrl);
-    if (item.resultUrl) URL.revokeObjectURL(item.resultUrl);
-  });
+  state.items.forEach(releaseItem);
   state.items = [];
   state.activeId = null;
   state.cropMode = false;
+  state.cropDraft = null;
   setActiveItem(null);
   setStatus("INITIAL_STATUS");
   setProgress(0);
@@ -776,86 +1084,215 @@ function clearItems() {
 
 /* --------------------------------------------------------------- conversion */
 
+/** Reports a failed job, unless it failed only because it was superseded. */
+function reportError(error) {
+  if (error?.name === "AbortError") return;
+  console.error(error);
+  setStatus("CONVERT_ERROR", { message: error?.message || String(error) });
+}
+
+let useClock = 0;
+function touch(item) {
+  item.lastUsed = ++useClock;
+}
+
 /**
- * Caches the linearised scene an item was last previewed from.
+ * Renders an image's working picture — its conversion plus its edits, full
+ * size, lossless — in a worker, and keeps it on the item.
  *
- * Only the crop and the input interpretation change what `prepareScene`
- * produces, so the buffer survives every other settings change — which is
- * what makes the exposure slider live.
+ * Only the latest request per image counts: asking for a different version
+ * cancels the one in flight, so a quick run of edits never queues up renders
+ * nobody will see, and a late result can never overwrite a newer one.
  */
-function ensurePrepared(item, settings) {
-  const key = `${JSON.stringify(item.crop)}|${settings.inputOverride}`;
-  if (item.prepared?.key !== key) {
-    item.prepared = { key, data: prepareScene(item.source, settings, item.crop) };
+/** Tells assistive technology (and anyone waiting) that the picture is still being rendered. */
+function updateRenderBusy() {
+  elements.resultPage.setAttribute("aria-busy", String(Boolean(activeItem()?.pending)));
+}
+
+function requestRender(item, { priority = PRIORITY.interactive, onProgress } = {}) {
+  const key = renderKey(item);
+  if (item.render?.key === key) {
+    if (item.pending && item.pending.key !== key) {
+      item.pending.job.cancel();
+      item.pending = null;
+      updateRenderBusy();
+    }
+    return Promise.resolve(item.render);
   }
-  return item.prepared.data;
+  if (item.pending?.key === key) {
+    item.pending.job.raise(priority);
+    if (onProgress) item.pending.onProgress = onProgress;
+    return item.pending.promise;
+  }
+  item.pending?.job.cancel();
+
+  const pending = { key, onProgress };
+  const forScene = sceneKey(item);
+  pending.job = pool.run(
+    "render",
+    {
+      sourceId: item.id,
+      source: item.source,
+      settings: renderSettings(item),
+      crop: item.crop,
+      scene: sceneFor(item),
+      detail: true
+    },
+    { priority, onProgress: (value) => pending.onProgress?.(value) }
+  );
+  pending.promise = pending.job.promise.then((result) => {
+    if (item.pending === pending) item.pending = null;
+    updateRenderBusy();
+    rememberScene(item, forScene, result.scene);
+    const render = {
+      key,
+      width: result.width,
+      height: result.height,
+      peak: result.peak,
+      imageData: new ImageData(result.data, result.width, result.height)
+    };
+    if (!state.items.includes(item)) return render;
+    item.render = render;
+    touch(item);
+    refreshThumb(item, render);
+    enforceBudget();
+    if (item === activeItem()) showRender(item);
+    return render;
+  });
+  // Callers that care attach their own handlers; this keeps a superseded,
+  // unobserved render from being reported as an unhandled rejection.
+  pending.promise.catch(() => {
+    if (item.pending === pending) item.pending = null;
+    updateRenderBusy();
+  });
+  item.pending = pending;
+  updateRenderBusy();
+  return pending.promise;
+}
+
+/** The reduced linear buffer the live preview draws from, built in a worker. */
+function requestPrepared(item, priority = PRIORITY.interactive) {
+  const key = sceneKey(item);
+  if (item.prepared?.key === key) return Promise.resolve(item.prepared.data);
+  if (item.preparing?.key === key) {
+    item.preparing.job.raise(priority);
+    return item.preparing.promise;
+  }
+  item.preparing?.job.cancel();
+
+  const preparing = { key };
+  preparing.job = pool.run(
+    "prepare",
+    { sourceId: item.id, source: item.source, settings: renderSettings(item), crop: item.crop },
+    { priority }
+  );
+  preparing.promise = preparing.job.promise.then((data) => {
+    if (item.preparing === preparing) item.preparing = null;
+    rememberScene(item, key, data.scene);
+    if (state.items.includes(item)) item.prepared = { key, data };
+    return data;
+  });
+  preparing.promise.catch(() => {});
+  item.preparing = preparing;
+  return preparing.promise;
 }
 
 /**
- * The scene measurement the live preview exposed from, when it still applies,
- * so a full conversion resolves exactly the brightness the preview showed.
+ * Keeps memory bounded however many images are open. Full-size pictures are
+ * dropped least-recently-viewed first once they pass RENDER_BUDGET (the
+ * selected one never), and the caches only the editor needs are kept for the
+ * selected image alone.
  */
-function measuredScene(item, settings) {
-  return item.prepared?.key === `${JSON.stringify(item.crop)}|${settings.inputOverride}`
-    ? item.prepared.data.scene
-    : undefined;
+function enforceBudget() {
+  const active = activeItem();
+  let total = 0;
+  for (const item of state.items) if (item.render) total += item.render.imageData.data.length;
+  if (total <= RENDER_BUDGET) return;
+  const candidates = state.items
+    .filter((item) => item.render && item !== active)
+    .sort((a, b) => a.lastUsed - b.lastUsed);
+  for (const item of candidates) {
+    if (total <= RENDER_BUDGET) break;
+    total -= item.render.imageData.data.length;
+    item.render = null;
+  }
 }
 
-async function convertItem(item, settings, onProgress) {
-  const converted = await convert(item.source, settings, item.crop, {
-    onProgress,
-    // Reuse the measurement the preview exposed from, so releasing the slider
-    // can never shift the brightness the user just dialled in.
-    scene: measuredScene(item, settings)
-  });
-
-  const { canvas, blob } = await encodeResult(converted, settings);
-  if (item.resultUrl) URL.revokeObjectURL(item.resultUrl);
-
-  // The settings are kept so the editor can show this same conversion
-  // without its edits (see peekUnedited).
-  item.result = { canvas, blob, peak: converted.peak, settings: { ...settings } };
-  item.resultUrl = URL.createObjectURL(blob);
+function trimCaches(active, previous) {
+  for (const item of state.items) {
+    if (item === active) continue;
+    item.unedited = null;
+    item.uneditedPreview = null;
+    if (item !== previous) {
+      item.preparing?.job.cancel();
+      item.preparing = null;
+      item.prepared = null;
+    }
+  }
 }
 
+/**
+ * Converts every image with the shared settings, several at a time.
+ *
+ * Each image keeps its own edits and crop: converting again changes the
+ * conversion underneath them, not the adjustments on top.
+ */
 async function convertAllItems() {
   if (!state.items.length) return;
-  // The adjust panel tweaks the result you are looking at, so a new conversion
-  // starts from the faithful, unedited one again.
-  resetAdjust();
+  const current = activeItem();
+  if (current && state.cropMode) applyCropDraft(current, { quiet: true });
   const settings = readSettings();
   persistSettings();
+  const tone = toneOf(settings);
 
   setBusy(true);
   setStatus("CONVERTING");
   setProgress(0);
 
-  try {
-    for (let index = 0; index < state.items.length; index++) {
-      const item = state.items[index];
-      await convertItem(item, settings, (ratio) =>
-        setProgress((index + ratio) / state.items.length)
-      );
-      if (item.id === state.activeId) renderResult();
-    }
+  const progress = new Map();
+  const report = () => {
+    let sum = 0;
+    for (const value of progress.values()) sum += value;
+    setProgress(sum / state.items.length);
+  };
+  // The image on screen first, so it is the first to appear.
+  const order = current ? [current, ...state.items.filter((item) => item !== current)] : [...state.items];
 
+  try {
+    await Promise.all(
+      order.map((item) => {
+        item.result = { settings: tone };
+        item.unedited = null;
+        item.uneditedPreview = null;
+        return requestRender(item, {
+          priority: item === current ? PRIORITY.interactive : PRIORITY.batch,
+          onProgress: (value) => {
+            progress.set(item.id, value);
+            report();
+          }
+        });
+      })
+    );
     const item = activeItem();
-    setStatus("CONVERTED", {
-      width: item.result.canvas.width,
-      height: item.result.canvas.height,
-      nits: Math.round(item.result.peak * REFERENCE_WHITE)
-    });
+    if (item?.render) {
+      setStatus("CONVERTED", {
+        width: item.render.width,
+        height: item.render.height,
+        nits: Math.round(item.render.peak * REFERENCE_WHITE)
+      });
+    }
   } catch (error) {
-    setStatus("CONVERT_ERROR", { message: error?.message || String(error) });
+    reportError(error);
   } finally {
     setBusy(false);
-    renderResult();
-    renderQueue();
     setProgress(0);
-    // Warm the live-exposure buffer now rather than on the first drag, so
-    // scrubbing starts smoothly.
-    const ready = activeItem();
-    if (ready?.result) setTimeout(() => ensurePrepared(ready, settings), 0);
+    renderResult();
+    syncQueue();
+    const item = activeItem();
+    // The workers each still hold a copy of the last image they converted;
+    // only the selected one's is worth keeping for the edits to come.
+    for (const other of state.items) if (other !== item) pool.forget(other.id);
+    if (item?.result) requestPrepared(item, PRIORITY.background).catch(() => {});
   }
 }
 
@@ -867,9 +1304,9 @@ let scrubFrame = 0;
  * Mirrors a preview frame into the dialog, so the sliders can be judged
  * against the picture rather than by their numbers.
  *
- * `source` is whatever already holds the current pixels — the ImageData a
- * scrub just produced, or the result canvas when the dialog opens — so the
- * dialog never runs the pipeline itself and cannot disagree with the pane.
+ * `source` is whatever already holds the current pixels — a live preview
+ * frame, or the full-size render once it lands — so the dialog never runs
+ * the pipeline itself and cannot disagree with the pane.
  *
  * While the unedited picture is being shown (see peekUnedited) the frame is
  * only remembered, and painted once the peek ends.
@@ -898,90 +1335,236 @@ function paintAdjustCanvas(source) {
 }
 
 /**
- * Redraws the preview from the cached scene, without re-encoding a file.
+ * Redraws the live preview for the selected image's current edits.
  *
- * Only the cheap tail of the pipeline re-runs — everything up to the transfer
- * function is cached by `prepareScene` — so dragging any of the adjust sliders
- * stays interactive even on a full-resolution image.
+ * Only the cheap tail of the pipeline runs here, on a reduced buffer that a
+ * worker prepared (see requestPrepared); the exact full-size picture follows
+ * from the worker when the slider is released.
  */
-function scrubAdjust() {
-  updateSettingVisibility();
-  // Moving a slider means looking at the edit, so a peek at the unedited
-  // picture ends here.
-  endPeek();
-
-  const item = activeItem();
+function schedulePreview(item) {
   if (!item?.result || state.processing) return;
-
+  if (item.render?.key === renderKey(item)) {
+    showRender(item);
+    return;
+  }
+  if (item.prepared?.key !== sceneKey(item)) {
+    requestPrepared(item)
+      .then(() => {
+        if (item === activeItem()) schedulePreview(item);
+      })
+      .catch(() => {});
+    return;
+  }
   cancelAnimationFrame(scrubFrame);
   scrubFrame = requestAnimationFrame(() => {
-    const settings = readSettings();
-    const imageData = renderPreview(ensurePrepared(item, settings), settings);
+    if (item !== activeItem() || item.prepared?.key !== sceneKey(item)) return;
+    if (item.render?.key === renderKey(item)) {
+      showRender(item);
+      return;
+    }
+    const imageData = renderPreview(item.prepared.data, renderSettings(item));
     const canvas = elements.resultPreview;
     canvas.width = imageData.width;
     canvas.height = imageData.height;
     canvas.getContext("2d").putImageData(imageData, 0, 0);
-    // Swap the encoded file out for the live canvas only while scrubbing.
     canvas.hidden = false;
-    elements.resultImage.hidden = true;
+    elements.resultCanvas.hidden = true;
     paintAdjustPreview(imageData);
   });
 }
 
-/**
- * Re-encodes the active item so the preview is a real file again.
- *
- * Edits can arrive faster than a full-resolution encode takes — a
- * double-click reset lands two in a row, since the first press moves the
- * slider before the second one resets it. Dropping the later edit would leave
- * the file showing a value the controls no longer say, so an edit that
- * arrives mid-encode is remembered and re-run once the current one finishes.
- * Only the most recent is kept: the intermediate states are not worth
- * encoding.
- */
-let commitQueued = false;
-
-async function commitAdjust() {
+/** A slider moved: the selected image's edits follow it, and the preview redraws. */
+function onEditInput() {
+  updateSettingVisibility();
+  // Moving a slider means looking at the edit, so a peek at the unedited
+  // picture ends here.
+  endPeek();
   const item = activeItem();
-  if (!item?.result) return;
-  if (state.processing) {
-    commitQueued = true;
-    return;
-  }
+  if (!item) return;
+  beginGesture(item);
+  item.edits = readEdits();
+  updateHistoryButtons();
+  schedulePreview(item);
+}
 
-  const settings = readSettings();
-  persistSettings();
-  // A background render of the unedited picture would halve the speed of the
-  // encode the user is waiting for; it restarts once this one lands.
-  cancelUneditedRender();
-  setBusy(true);
-  setStatus("CONVERTING");
-  try {
-    await convertItem(item, settings, setProgress);
-  } catch (error) {
-    setStatus("CONVERT_ERROR", { message: error?.message || String(error) });
-  } finally {
-    setBusy(false);
-    setProgress(0);
-    renderResult();
-    renderQueue();
-    const result = item.result;
-    if (result) {
-      // Replace the scrub frame with the pixels that were actually encoded.
-      paintAdjustPreview(result.canvas);
-      setStatus("CONVERTED", {
-        width: result.canvas.width,
-        height: result.canvas.height,
-        nits: Math.round(result.peak * REFERENCE_WHITE)
-      });
-    }
-    if (commitQueued) {
-      commitQueued = false;
-      await commitAdjust();
-    } else if (elements.adjustDialog.open) {
-      renderUnedited(item);
-    }
+/**
+ * A slider was released: the change becomes one step of the image's history,
+ * and its full-size picture is rendered again. Nothing is re-encoded — the
+ * picture stays lossless until it is downloaded.
+ */
+/** The step the last slider release recorded, so a double-click can fold it into its reset. */
+let lastSliderStep = null;
+
+function onEditChange(event) {
+  const item = activeItem();
+  if (!item) return;
+  item.edits = readEdits();
+  const steps = item.history.undo.length;
+  finishGesture(item);
+  lastSliderStep = item.history.undo.length > steps && event?.target
+    ? { item, id: event.target.id, at: performance.now(), step: item.history.undo.at(-1) }
+    : null;
+  if (item.result) requestRender(item).catch(reportError);
+}
+
+/**
+ * The first click of a double-click has already moved the slider to where it
+ * landed, and recorded that as a step. The reset that follows should be one
+ * step from where the slider was before either click, so that one Undo
+ * brings the old value back: take the first click's step back out, and start
+ * the reset from the state before it.
+ */
+function foldIntoReset(slider) {
+  const item = activeItem();
+  const last = lastSliderStep;
+  lastSliderStep = null;
+  if (!item || !last || last.item !== item || last.id !== slider.id || performance.now() - last.at > 800) return;
+  if (item.history.undo.at(-1) !== last.step) return;
+  item.history.undo.pop();
+  item.gestureStart = last.step;
+}
+
+/* ------------------------------------------------------------------ history */
+
+/*
+ * Undo and redo, per image.
+ *
+ * A step is everything the user can change about one image — its edits and
+ * its crop — captured when a change starts and recorded when it ends: a
+ * slider drag, a double-click reset, "Reset adjustments", applying or
+ * resetting a crop. Dragging a slider is one step, not one per pixel moved.
+ */
+const IS_MAC = /Mac|iPhone|iPad|iPod/.test(navigator.userAgentData?.platform || navigator.platform || "");
+const SHORTCUTS = {
+  undo: IS_MAC ? "⌘Z" : "Ctrl+Z",
+  redo: IS_MAC ? "⇧⌘Z" : "Ctrl+Y"
+};
+
+function snapshot(item) {
+  return { edits: { ...item.edits }, crop: item.crop ? { ...item.crop } : null };
+}
+
+function sameSnapshot(a, b) {
+  return EDIT_KEYS.every((key) => Number(a.edits[key]) === Number(b.edits[key])) && sameCrop(a.crop, b.crop);
+}
+
+function recordStep(item, before) {
+  item.history.undo.push(before);
+  if (item.history.undo.length > HISTORY_LIMIT) item.history.undo.shift();
+  item.history.redo = [];
+  updateHistoryButtons();
+}
+
+function beginGesture(item) {
+  if (!item.gestureStart) item.gestureStart = snapshot(item);
+}
+
+function finishGesture(item) {
+  const before = item.gestureStart;
+  item.gestureStart = null;
+  if (before && !sameSnapshot(before, snapshot(item))) recordStep(item, before);
+  updateHistoryButtons();
+}
+
+/** The crop the draft would become on "Done": null when it is the whole picture. */
+function draftAsCommitted(item) {
+  const draft = state.cropDraft;
+  return !draft || isFullCrop(item, draft) ? null : normalizeCrop(item.source, draft);
+}
+
+function cropDraftChanged(item) {
+  return Boolean(state.cropMode && item.id === state.activeId && !sameCrop(draftAsCommitted(item), item.crop));
+}
+
+function draftFor(item) {
+  return item.crop ? { ...item.crop } : normalizeCrop(item.source, fitCropToRatio(item, fullCrop(item), aspectRatio(item)));
+}
+
+function applySnapshot(item, step) {
+  item.edits = { ...EDIT_DEFAULTS, ...step.edits };
+  item.crop = step.crop ? { ...step.crop } : null;
+  item.gestureStart = null;
+  if (item === activeItem()) {
+    if (state.cropMode) state.cropDraft = draftFor(item);
+    writeEdits(item.edits);
+    endPeek();
+    renderSelection();
+    updateSourceNote();
+    if (item.result) schedulePreview(item);
   }
+  if (item.result) requestRender(item).catch(reportError);
+  updateResultNote();
+  updateControls();
+}
+
+function undo() {
+  const item = activeItem();
+  if (!item || state.processing) return false;
+  // In crop mode an unapplied selection is the most recent change, so it goes first.
+  if (cropDraftChanged(item)) {
+    state.cropDraft = draftFor(item);
+    renderSelection();
+    updateSourceNote();
+    updateHistoryButtons();
+    return true;
+  }
+  const previous = item.history.undo.pop();
+  if (!previous) return false;
+  item.history.redo.push(snapshot(item));
+  applySnapshot(item, previous);
+  return true;
+}
+
+function redo() {
+  const item = activeItem();
+  if (!item || state.processing) return false;
+  const next = item.history.redo.pop();
+  if (!next) return false;
+  item.history.undo.push(snapshot(item));
+  applySnapshot(item, next);
+  return true;
+}
+
+function updateHistoryButtons() {
+  const item = activeItem();
+  const busy = state.processing;
+  const canUndo = Boolean(item && !busy && (item.history.undo.length || cropDraftChanged(item)));
+  const canRedo = Boolean(item && !busy && item.history.redo.length);
+  for (const button of [elements.undo, elements.adjustUndo]) button.disabled = !canUndo;
+  for (const button of [elements.redo, elements.adjustRedo]) button.disabled = !canRedo;
+}
+
+function labelHistoryButtons() {
+  for (const [button, action] of [
+    [elements.undo, "undo"],
+    [elements.adjustUndo, "undo"],
+    [elements.redo, "redo"],
+    [elements.adjustRedo, "redo"]
+  ]) {
+    const name = translate(action === "undo" ? "UNDO" : "REDO");
+    button.setAttribute("aria-label", name);
+    button.title = `${name} (${SHORTCUTS[action]})`;
+    button.setAttribute("aria-keyshortcuts", action === "undo" ? "Control+Z Meta+Z" : "Control+Y Control+Shift+Z Meta+Shift+Z");
+  }
+}
+
+/** Where typing belongs to the field itself, and Ctrl+Z must keep its native meaning. */
+function isTextEntry(element) {
+  if (!element) return false;
+  if (element.isContentEditable || element.tagName === "TEXTAREA") return true;
+  return element.tagName === "INPUT" && !["range", "button", "checkbox", "radio", "file", "submit", "reset"].includes(element.type);
+}
+
+function onHistoryShortcut(event) {
+  if (event.altKey || !(event.ctrlKey || event.metaKey)) return;
+  const key = event.key.toLowerCase();
+  const wantsUndo = key === "z" && !event.shiftKey;
+  const wantsRedo = (key === "z" && event.shiftKey) || (key === "y" && !event.shiftKey);
+  if (!wantsUndo && !wantsRedo) return;
+  if (isTextEntry(event.target) || elements.compareDialog.open) return;
+  // Only claim the keys when there is something to do: on a Mac, ⌘Y is the
+  // browser's history window and should keep working otherwise.
+  if (wantsUndo ? undo() : redo()) event.preventDefault();
 }
 
 /* ------------------------------------------------ before/after in the editor */
@@ -1008,45 +1591,48 @@ const peek = {
 };
 
 /**
- * The settings the item's result was converted with, minus every edit: its
- * exact conversion — tone curve, brightness, crop, size limit — as it looked
- * before the adjust panel was touched.
+ * The image's own conversion — tone curve, brightness, crop — with every edit
+ * taken away: what it looked like before the adjust panel was touched.
  */
 function uneditedSettings(item) {
-  const settings = { ...(item.result?.settings || readSettings()), exposure: 0, outputFormat: "image/jpeg" };
-  for (const key of GRADE_KEYS) settings[key] = GRADE_DEFAULTS[key];
-  return settings;
+  return renderSettings(item, EDIT_DEFAULTS);
 }
 
-/** Identifies an unedited render: the crop and everything that shapes the pixels. */
-function uneditedKey(item, settings) {
-  const { outputFormat, quality, ...pixels } = settings;
-  return JSON.stringify([item.crop, pixels]);
+function uneditedKey(item) {
+  return renderKey(item, EDIT_DEFAULTS);
 }
 
 /**
- * Renders the unedited picture at full size in the background, once per
- * conversion, and keeps it on the item.
+ * Renders the unedited picture at full size in a worker, once per
+ * conversion and crop, and keeps it on the item.
  *
  * Full size matters: the result on screen is full size, and a reduced "before"
  * would look softer next to it, so the comparison would credit a Sharpness or
- * Clarity edit with detail that is really just resolution. The render yields
- * as it goes, so the dialog stays responsive, and is set aside while a commit
- * runs.
+ * Clarity edit with detail that is really just resolution. It runs at the
+ * lowest priority, so it never delays an edit.
  */
 function renderUnedited(item) {
   if (!item?.result || state.processing) return;
-  const settings = uneditedSettings(item);
-  const key = uneditedKey(item, settings);
+  const key = uneditedKey(item);
   if (item.unedited?.key === key || peek.job?.key === key) return;
+  // With no edits, the working picture already is the unedited one.
+  if (item.render?.key === key) {
+    item.unedited = { key, frame: item.render.imageData };
+    return;
+  }
   cancelUneditedRender();
 
-  const job = { key, item, controller: new AbortController() };
-  peek.job = job;
-  convert(item.source, settings, item.crop, { signal: job.controller.signal, scene: measuredScene(item, settings) })
-    .then(({ imageData }) => {
-      if (peek.job !== job) return;
-      item.unedited = { key, frame: toCanvas(imageData, settings.maxDimension) };
+  const job = pool.run(
+    "render",
+    { sourceId: item.id, source: item.source, settings: uneditedSettings(item), crop: item.crop, scene: sceneFor(item), detail: false },
+    { priority: PRIORITY.background }
+  );
+  const entry = { key, item, job };
+  peek.job = entry;
+  job.promise
+    .then((result) => {
+      if (peek.job !== entry || !state.items.includes(item)) return;
+      item.unedited = { key, frame: new ImageData(result.data, result.width, result.height) };
       // Swap the sharp version in if a peek is already showing the stand-in.
       if (peek.showing && activeItem() === item) paintAdjustCanvas(item.unedited.frame);
     })
@@ -1054,36 +1640,48 @@ function renderUnedited(item) {
       if (error?.name !== "AbortError") console.warn("Unedited render failed", error);
     })
     .finally(() => {
-      if (peek.job === job) peek.job = null;
+      if (peek.job === entry) peek.job = null;
     });
 }
 
 function cancelUneditedRender() {
-  peek.job?.controller.abort();
+  peek.job?.job.cancel();
   peek.job = null;
 }
 
 /**
  * The unedited picture to show now: the full-size render when it is ready,
  * otherwise a stand-in rendered from the preview buffer (tens of milliseconds)
- * while the full-size one is started.
+ * while the full-size one is started. Null only if neither exists yet, in
+ * which case whichever arrives first is shown.
  */
 function uneditedFrame(item) {
-  const settings = uneditedSettings(item);
-  const key = uneditedKey(item, settings);
+  const key = uneditedKey(item);
   if (item.unedited?.key === key) return item.unedited.frame;
-  if (item.uneditedPreview?.key !== key) {
-    item.uneditedPreview = { key, frame: renderPreview(ensurePrepared(item, settings), settings) };
-  }
+  if (item.render?.key === key) return item.render.imageData;
   renderUnedited(item);
-  return item.uneditedPreview.frame;
+  if (item.uneditedPreview?.key === key) return item.uneditedPreview.frame;
+  if (item.prepared?.key === sceneKey(item)) {
+    item.uneditedPreview = { key, frame: renderPreview(item.prepared.data, uneditedSettings(item)) };
+    return item.uneditedPreview.frame;
+  }
+  requestPrepared(item)
+    .then(() => {
+      if (peek.showing && activeItem() === item && item.unedited?.key !== key) {
+        const frame = uneditedFrame(item);
+        if (frame) paintAdjustCanvas(frame);
+      }
+    })
+    .catch(() => {});
+  return null;
 }
 
 function showPeek() {
   const item = activeItem();
   if (!item?.result || peek.showing) return;
   peek.showing = true;
-  paintAdjustCanvas(uneditedFrame(item));
+  const frame = uneditedFrame(item);
+  if (frame) paintAdjustCanvas(frame);
   elements.adjustPeekTag.hidden = false;
   elements.adjustPreview.setAttribute("aria-pressed", "true");
 }
@@ -1172,16 +1770,16 @@ function releaseScrollLock() {
  */
 let beforePaintedFor = null;
 
-function paintBeforeImage(item) {
-  // Keyed on the result's object URL, which is new for every conversion, so
-  // this never holds on to a result that has since been replaced or cleared.
-  if (beforePaintedFor === item.resultUrl) return;
+function paintBeforeImage(item, render) {
+  // Keyed on the image, its crop and the size it is drawn at, so it is only
+  // redrawn when one of those changes.
+  const key = `${item.id}|${JSON.stringify(item.crop)}|${render.width}x${render.height}`;
+  if (beforePaintedFor === key) return;
   const crop = normalizeCrop(item.source, item.crop);
-  const target = item.result.canvas;
   const canvas = elements.compareBefore;
   const image = elements.sourceImage;
-  canvas.width = target.width;
-  canvas.height = target.height;
+  canvas.width = render.width;
+  canvas.height = render.height;
   canvas.getContext("2d").drawImage(
     image,
     crop.x,
@@ -1195,7 +1793,7 @@ function paintBeforeImage(item) {
   );
   // Only remembered when the source had actually loaded, so an early open is
   // redrawn next time rather than left blank.
-  beforePaintedFor = image.complete && image.naturalWidth ? item.resultUrl : null;
+  beforePaintedFor = image.complete && image.naturalWidth ? key : null;
 }
 
 /** The wipe position, 0–100. */
@@ -1215,12 +1813,25 @@ function setWipe(percent) {
   }
 }
 
-function openCompare() {
+async function openCompare() {
   const item = activeItem();
   if (!item?.result) return;
-  elements.compareAfter.src = item.resultUrl;
-  elements.compareAfter.alt = translate("COMPARE_AFTER");
-  paintBeforeImage(item);
+  let render;
+  try {
+    render = await requestRender(item);
+  } catch (error) {
+    reportError(error);
+    return;
+  }
+  // The "before" is drawn from the source pane, so it has to be this image's.
+  await sourceShown;
+  if (item !== activeItem()) return;
+  const after = elements.compareAfter;
+  after.width = render.width;
+  after.height = render.height;
+  after.getContext("2d").putImageData(render.imageData, 0, 0);
+  after.setAttribute("aria-label", translate("COMPARE_AFTER"));
+  paintBeforeImage(item, render);
   elements.compareBefore.setAttribute("aria-label", translate("COMPARE_BEFORE"));
   setWipe(50);
   openModal(elements.compareDialog);
@@ -1295,23 +1906,114 @@ function nudgeWipe(event) {
   event.preventDefault();
 }
 
-function outputName(item) {
-  const extension = EXTENSIONS[item.result.blob.type] || "jpg";
+function outputName(item, format = exportSettings().outputFormat) {
+  const extension = EXTENSIONS[format] || "jpg";
   const baseName = item.file.name.replace(/\.[^.]+$/, "");
   return `${baseName}-sdr.${extension}`;
 }
 
-function downloadItem(item) {
-  if (!item?.resultUrl) return;
+/**
+ * Writes an image's file, with the format, quality and size limit chosen
+ * now. This is the only place anything is compressed: until here the picture
+ * is kept lossless.
+ *
+ *  - JPEG or WebP at full size encode straight from the working picture,
+ *    which already has every edit applied at that size.
+ *  - With a size limit, the picture is rendered again and shrunk first, so
+ *    clarity, sharpness and noise reduction are applied at the saved size.
+ *  - PNG is rendered at 16 bits per channel and written in a worker.
+ *
+ * The last file is kept until something about it changes, so pressing
+ * Download twice, or opening it in a tab after downloading, costs nothing.
+ */
+async function exportItem(item) {
+  const output = exportSettings();
+  const key = `${renderKey(item)}|${JSON.stringify(output)}`;
+  if (item.exported?.key === key) return item.exported;
+
+  const settings = { ...renderSettings(item), ...output };
+  const crop = normalizeCrop(item.source, item.crop);
+  const shrinks = output.maxDimension && Math.max(crop.width, crop.height) > output.maxDimension;
+  const job = { sourceId: item.id, source: item.source, settings, crop: item.crop, scene: sceneFor(item) };
+  let blob;
+  if (output.outputFormat === "image/png") {
+    ({ blob } = await pool.run("png", job, { priority: PRIORITY.export }).promise);
+  } else if (!shrinks) {
+    const render = await requestRender(item, { priority: PRIORITY.export });
+    blob = await canvasToBlob(toCanvas(render.imageData, 0), output.outputFormat, output.quality);
+  } else {
+    const result = await pool.run("render", { ...job, detail: false }, { priority: PRIORITY.export }).promise;
+    ({ blob } = await encodeResult({ imageData: new ImageData(result.data, result.width, result.height), pixels16: null }, settings));
+  }
+
+  if (item.exported) URL.revokeObjectURL(item.exported.url);
+  item.exported = { key, blob, url: URL.createObjectURL(blob), name: outputName(item, output.outputFormat) };
+  return item.exported;
+}
+
+function saveFile(exported) {
   const link = document.createElement("a");
-  link.href = item.resultUrl;
-  link.download = outputName(item);
+  link.href = exported.url;
+  link.download = exported.name;
   link.click();
 }
 
+async function downloadItem(item) {
+  if (!item?.result) return;
+  const status = { ...state.status };
+  setStatus("EXPORTING", { name: outputName(item) });
+  try {
+    saveFile(await exportItem(item));
+    setStatus(status.key, status.params);
+  } catch (error) {
+    setStatus("EXPORT_ERROR", { message: error?.message || String(error) });
+  }
+}
+
 function openItemInTab(item) {
-  if (!item?.resultUrl) return;
-  window.open(item.resultUrl, "_blank", "noopener");
+  if (!item?.result) return;
+  // Opened now, while the click still counts as the user's: a tab opened
+  // after waiting for the file would be stopped by the pop-up blocker.
+  const tab = window.open("", "_blank");
+  exportItem(item)
+    .then((exported) => {
+      if (tab) {
+        tab.opener = null;
+        tab.location.href = exported.url;
+      } else {
+        window.open(exported.url, "_blank", "noopener");
+      }
+    })
+    .catch((error) => {
+      tab?.close();
+      setStatus("EXPORT_ERROR", { message: error?.message || String(error) });
+    });
+}
+
+/**
+ * Downloads every converted image. The files are prepared in parallel, and
+ * handed to the browser a moment apart so it treats them as separate
+ * downloads. Files of images not on screen are released afterwards.
+ */
+async function downloadAll() {
+  const items = state.items.filter((item) => item.result);
+  if (!items.length) return;
+  const status = { ...state.status };
+  setStatus("EXPORTING", { name: `${items.length} ×` });
+  try {
+    const files = await Promise.all(items.map(exportItem));
+    files.forEach((exported, index) => setTimeout(() => saveFile(exported), index * 250));
+    setTimeout(() => {
+      for (const item of items) {
+        if (item === activeItem() || !item.exported) continue;
+        URL.revokeObjectURL(item.exported.url);
+        item.exported = null;
+      }
+    }, files.length * 250 + 60000);
+    setStatus(status.key, status.params);
+  } catch (error) {
+    setStatus("EXPORT_ERROR", { message: error?.message || String(error) });
+  }
 }
 
 /* --------------------------------------------------------------------- crop */
@@ -1355,15 +2057,18 @@ function resizeFromAnchor(item, anchor, pointer, ratio) {
 }
 
 function setCrop(item, rect) {
-  item.crop = normalizeCrop(item.source, rect);
+  state.cropDraft = normalizeCrop(item.source, rect);
   renderSelection();
   updateSourceNote();
-  updateControls();
+  updateHistoryButtons();
 }
 
 function beginDrag(event) {
   const item = activeItem();
   if (!item || !state.cropMode || event.button !== 0) return;
+  // Until this image's picture is on screen there is nothing to map the
+  // pointer onto (see renderSource).
+  if (elements.sourceImage.getAttribute("src") !== item.previewUrl || !elements.sourceImage.naturalWidth) return;
 
   const handle = event.target.closest?.(".crop-handle");
   const insideSelection = Boolean(event.target.closest?.(".crop-selection"));
@@ -1380,7 +2085,10 @@ function beginDrag(event) {
       x: direction.includes("w") ? startCrop.x + startCrop.width : startCrop.x,
       y: direction.includes("n") ? startCrop.y + startCrop.height : startCrop.y
     };
-  } else if (insideSelection) {
+  } else if (insideSelection && !isFullCrop(item, startCrop)) {
+    // Dragging inside a smaller selection moves it. A selection that covers
+    // the whole picture — which is how crop mode starts — has nowhere to
+    // move, and every point is "inside" it, so there a drag draws a new one.
     mode = "move";
   }
 
@@ -1413,22 +2121,66 @@ function beginDrag(event) {
 function toggleCropMode() {
   const item = activeItem();
   if (!item) return;
-  state.cropMode = !state.cropMode;
   if (state.cropMode) {
-    if (!item.crop) item.crop = fitCropToRatio(item, fullCrop(item), aspectRatio(item));
-    setStatus("CROP_INSTRUCTION");
+    applyCropDraft(item);
+    return;
   }
+  state.cropMode = true;
+  state.cropDraft = draftFor(item);
+  state.statusBeforeCrop = { ...state.status };
+  setStatus("CROP_INSTRUCTION");
   renderSelection();
   updateSourceNote();
   updateControls();
 }
 
+/**
+ * "Done": the selection becomes the image's crop, straight away. The result
+ * is rendered again with it — there is no need to convert again — and the
+ * source keeps showing the kept area. One step of the image's history.
+ */
+function applyCropDraft(item, { quiet = false } = {}) {
+  const next = draftAsCommitted(item);
+  state.cropMode = false;
+  state.cropDraft = null;
+  const changed = !sameCrop(next, item.crop);
+  if (changed) {
+    recordStep(item, snapshot(item));
+    item.crop = next;
+    if (item.result) requestRender(item).catch(reportError);
+  }
+  if (!quiet) {
+    if (next) setStatus("CROP_APPLIED", { width: next.width, height: next.height });
+    else if (changed) setStatus("CROP_RESET_DONE");
+    else if (state.statusBeforeCrop) setStatus(state.statusBeforeCrop.key, state.statusBeforeCrop.params);
+  }
+  state.statusBeforeCrop = null;
+  if (item === activeItem()) {
+    renderSelection();
+    updateSourceNote();
+    renderResult();
+    updateControls();
+  }
+}
+
 function resetCrop() {
   const item = activeItem();
   if (!item) return;
-  item.crop = state.cropMode ? fitCropToRatio(item, fullCrop(item), aspectRatio(item)) : null;
+  if (state.cropMode) {
+    state.cropDraft = normalizeCrop(item.source, fitCropToRatio(item, fullCrop(item), aspectRatio(item)));
+    renderSelection();
+    updateSourceNote();
+    updateHistoryButtons();
+    setStatus("CROP_RESET_DONE");
+    return;
+  }
+  if (!item.crop) return;
+  recordStep(item, snapshot(item));
+  item.crop = null;
+  if (item.result) requestRender(item).catch(reportError);
   renderSelection();
   updateSourceNote();
+  renderResult();
   updateControls();
   setStatus("CROP_RESET_DONE");
 }
@@ -1438,11 +2190,24 @@ function applyAspectChange() {
   persistSettings();
   const item = activeItem();
   if (!item) return;
-  if (item.crop || state.cropMode) {
-    item.crop = fitCropToRatio(item, currentCrop(item), aspectRatio(item));
+  if (state.cropMode) {
+    state.cropDraft = normalizeCrop(item.source, fitCropToRatio(item, currentCrop(item), aspectRatio(item)));
     renderSelection();
     updateSourceNote();
+    updateHistoryButtons();
+    return;
   }
+  if (!item.crop) return;
+  const fitted = normalizeCrop(item.source, fitCropToRatio(item, item.crop, aspectRatio(item)));
+  const next = isFullCrop(item, fitted) ? null : fitted;
+  if (sameCrop(next, item.crop)) return;
+  recordStep(item, snapshot(item));
+  item.crop = next;
+  if (item.result) requestRender(item).catch(reportError);
+  renderSelection();
+  updateSourceNote();
+  renderResult();
+  updateControls();
 }
 
 /* ------------------------------------------------------------------- events */
@@ -1464,26 +2229,29 @@ elements.cropReset.addEventListener("click", resetCrop);
 elements.clear.addEventListener("click", clearItems);
 elements.download.addEventListener("click", () => downloadItem(activeItem()));
 elements.openTab.addEventListener("click", () => openItemInTab(activeItem()));
-elements.downloadAll.addEventListener("click", () => {
-  state.items.filter((item) => item.result).forEach((item, index) => {
-    setTimeout(() => downloadItem(item), index * 250);
-  });
-});
+elements.downloadAll.addEventListener("click", downloadAll);
 elements.aspect.addEventListener("change", applyAspectChange);
 elements.overlay.addEventListener("pointerdown", beginDrag);
 elements.sourceImage.addEventListener("load", renderSelection);
 window.addEventListener("resize", renderSelection);
 
-for (const key of ["exposure", ...GRADE_KEYS]) {
-  elements[key].addEventListener("input", scrubAdjust);
-  elements[key].addEventListener("change", commitAdjust);
+for (const key of EDIT_KEYS) {
+  elements[key].addEventListener("input", onEditInput);
+  elements[key].addEventListener("change", onEditChange);
 }
 
+for (const button of [elements.undo, elements.adjustUndo]) button.addEventListener("click", undo);
+for (const button of [elements.redo, elements.adjustRedo]) button.addEventListener("click", redo);
+document.addEventListener("keydown", onHistoryShortcut);
+
 elements.adjust.addEventListener("click", () => {
+  const item = activeItem();
+  if (!item?.result) return;
   openModal(elements.adjustDialog);
-  // Seed from the current result so the dialog is never blank before the
+  // Seed from the current picture so the dialog is never blank before the
   // first drag; afterwards every scrub keeps it in step.
-  paintAdjustPreview(activeItem()?.result?.canvas);
+  if (item.render) paintAdjustPreview(item.render.imageData);
+  requestPrepared(item).catch(() => {});
   // Have the unedited picture ready for the first press, once the dialog has
   // had a moment to appear.
   setTimeout(() => {
@@ -1535,9 +2303,13 @@ elements.adjustPreview.addEventListener("blur", () => {
   if (peek.pressAt) endPeek();
 });
 elements.adjustReset.addEventListener("click", () => {
-  resetAdjust();
-  scrubAdjust();
-  commitAdjust();
+  const item = activeItem();
+  if (!item) return;
+  beginGesture(item);
+  item.edits = { ...EDIT_DEFAULTS };
+  writeEdits(item.edits);
+  schedulePreview(item);
+  onEditChange();
 });
 
 /**
@@ -1559,7 +2331,13 @@ document.addEventListener("mousedown", (event) => {
   if (!slider || slider.disabled) return;
 
   event.preventDefault();
-  if (slider.value === slider.defaultValue) return;
+  if (EDIT_KEYS.includes(slider.id)) foldIntoReset(slider);
+  if (slider.value === slider.defaultValue) {
+    // Already at the default, but the first click may have moved it there and
+    // back; settle the history either way.
+    if (EDIT_KEYS.includes(slider.id)) slider.dispatchEvent(new Event("change", { bubbles: true }));
+    return;
+  }
   slider.value = slider.defaultValue;
   slider.dispatchEvent(new Event("input", { bubbles: true }));
   slider.dispatchEvent(new Event("change", { bubbles: true }));
@@ -1588,6 +2366,8 @@ elements.compareDivider.addEventListener("keydown", nudgeWipe);
   control.addEventListener("input", () => {
     updateSettingVisibility();
     persistSettings();
+    // Format, quality and size limit are applied at download; say which.
+    updateResultNote();
   });
 });
 

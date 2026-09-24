@@ -10,9 +10,10 @@
  *    so they run after tone mapping, on the sRGB-encoded signal: `createGrade`
  *    and `applyGrade`. The vignette runs just before, on linear display light,
  *    because darkening a corner is a change in how much light it gives off.
- *  - Clarity and sharpness look at neighbouring pixels, so they run last, over
- *    the finished image at the size it is saved at: `createDetail` and
- *    `applyDetail`.
+ *  - Noise reduction, clarity and sharpness look at neighbouring pixels, so they
+ *    run last, over the finished image at the size it is saved at, in that
+ *    order — sharpening before denoising would sharpen the noise too:
+ *    `createDetail` and `applyDetail`.
  *
  * Every control is neutral at 0, and each stage is skipped outright (its
  * factory returns null) when all of its controls are, so an unedited
@@ -47,6 +48,8 @@ export const GRADE_DEFAULTS = Object.freeze({
   vibrance: 0,
   /** Distance from grey, -100..100. */
   saturation: 0,
+  /** Edge-preserving smoothing of luminance and colour noise, 0..100. */
+  noise: 0,
   /** Edge-aware local contrast in the midtones, -100..100. */
   clarity: 0,
   /** Unsharp mask at the saved resolution, 0..100. */
@@ -378,7 +381,8 @@ export function createDetail(settings) {
   const options = { ...GRADE_DEFAULTS, ...settings };
   const sharpness = amount(options, "sharpness", 0);
   const clarity = amount(options, "clarity");
-  return sharpness || clarity ? { sharpness, clarity } : null;
+  const noise = amount(options, "noise", 0);
+  return sharpness || clarity || noise ? { sharpness, clarity, noise } : null;
 }
 
 /**
@@ -529,8 +533,205 @@ function upsampleAxis(size, small, step) {
   return { lower, upper, weight };
 }
 
+/* ---------------------------------------------------------- noise reduction */
+
 /**
- * Applies clarity and sharpness to a finished image, in place.
+ * Radii in pixels of the saved file. Luminance noise is fine-grained, so a
+ * small window is enough and keeps texture; colour noise comes in blotches
+ * several pixels across, and the eye resolves colour far more coarsely than
+ * brightness, so it can be averaged over a wider one.
+ */
+const NOISE_LUMA_RADIUS = 2;
+const NOISE_CHROMA_RADIUS = 4;
+/**
+ * Luminance variations with a local standard deviation below about this many
+ * encoded units (x the slider) count as noise; stronger ones are texture or
+ * edges and are kept. 0.035 is ~9/255 at 100.
+ */
+const NOISE_LUMA_SIGMA = 0.035;
+/**
+ * Regulariser for the colour filter. Small, so that even a faint brightness
+ * edge under a colour edge (red against blue differs by only ~0.05 in
+ * luminance) is enough to hold the colours apart. Over a flat area colour and
+ * luminance noise are uncorrelated, so the colour still flattens there.
+ */
+const NOISE_CHROMA_EPS = 0.0001;
+
+/** 1 / (window size) for each position along an axis, windows shrinking at the ends. */
+const inverseCounts = new Map();
+function inverseCount(size, r) {
+  const key = `${size}:${r}`;
+  let table = inverseCounts.get(key);
+  if (!table) {
+    table = new Float32Array(size);
+    for (let i = 0; i < size; i++) table[i] = 1 / (Math.min(size - 1, i + r) - Math.max(0, i - r) + 1);
+    if (inverseCounts.size > 16) inverseCounts.clear();
+    inverseCounts.set(key, table);
+  }
+  return table;
+}
+
+/**
+ * Mean over a (2r+1)^2 window into `out`, via running sums, with windows that
+ * shrink at the edges. `temp` is scratch of the same size, and `column` of
+ * one row. Nothing is allocated, which matters here: a full-size denoise makes
+ * fourteen of these passes over 3.7 million pixels.
+ *
+ * Both passes walk memory in order. The vertical one keeps a running sum per
+ * column and slides it down a row at a time, rather than walking each column
+ * top to bottom, which would jump a whole row of memory per step.
+ */
+function boxMeanInto(src, width, height, r, temp, out, column) {
+  const invX = inverseCount(width, r);
+  const invY = inverseCount(height, r);
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    let sum = 0;
+    const first = Math.min(r, width - 1);
+    for (let x = 0; x <= first; x++) sum += src[row + x];
+    for (let x = 0; x < width; x++) {
+      temp[row + x] = sum * invX[x];
+      if (x + r + 1 < width) sum += src[row + x + r + 1];
+      if (x - r >= 0) sum -= src[row + x - r];
+    }
+  }
+  column.fill(0, 0, width);
+  const firstRow = Math.min(r, height - 1);
+  for (let y = 0; y <= firstRow; y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) column[x] += temp[row + x];
+  }
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    const inv = invY[y];
+    for (let x = 0; x < width; x++) out[row + x] = column[x] * inv;
+    if (y + r + 1 < height) {
+      const add = (y + r + 1) * width;
+      for (let x = 0; x < width; x++) column[x] += temp[add + x];
+    }
+    if (y - r >= 0) {
+      const sub = (y - r) * width;
+      for (let x = 0; x < width; x++) column[x] -= temp[sub + x];
+    }
+  }
+  return out;
+}
+
+/**
+ * Edge-preserving noise reduction, in place, on encoded values.
+ *
+ * The picture is split into luminance and two colour-difference channels
+ * (B - Y, R - Y) and each is smoothed with a guided filter (He, Sun & Tang):
+ *
+ *  - Luminance is its own guide. Where its local variance is well below the
+ *    noise level the window is flattened to its mean; where it is above — an
+ *    edge, a texture — the filter passes it through. The threshold grows with
+ *    the slider, and so does the mix, so the control is continuous from 0.
+ *  - The colour channels are guided by luminance. Their output follows the
+ *    local luminance linearly, so a colour edge that coincides with a
+ *    brightness edge stays sharp, while colour speckle over a flat area — the
+ *    blotchy kind most visible in dark scenes — is averaged away.
+ *
+ * Recombining keeps the pixel's luminance exactly what the luminance filter
+ * made it, so colour noise reduction cannot shift brightness.
+ */
+function applyDenoise(amount, data8, data16, width, height, scale) {
+  const n = width * height;
+  const Y = buffer("dn-y", n);
+  const Cb = buffer("dn-cb", n);
+  const Cr = buffer("dn-cr", n);
+  const unit = data16 ? 1 / 65535 : 1 / 255;
+  const src = data16 || data8;
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    const r = src[p] * unit;
+    const g = src[p + 1] * unit;
+    const b = src[p + 2] * unit;
+    const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    Y[i] = y;
+    Cb[i] = b - y;
+    Cr[i] = r - y;
+  }
+
+  const temp = buffer("dn-temp", n);
+  const product = buffer("dn-product", n);
+  const meanI = buffer("dn-mean-i", n);
+  const meanII = buffer("dn-mean-ii", n);
+  const coefA = buffer("dn-a", n);
+  const coefB = buffer("dn-b", n);
+  const meanA = buffer("dn-mean-a", n);
+  const meanB = buffer("dn-mean-b", n);
+  const meanP = buffer("dn-mean-p", n);
+  const column = buffer("dn-column", width);
+
+  // Luminance, self-guided.
+  const rL = Math.max(1, Math.round(NOISE_LUMA_RADIUS * scale));
+  const epsL = (NOISE_LUMA_SIGMA * amount) ** 2;
+  for (let i = 0; i < n; i++) product[i] = Y[i] * Y[i];
+  boxMeanInto(Y, width, height, rL, temp, meanI, column);
+  boxMeanInto(product, width, height, rL, temp, meanII, column);
+  for (let i = 0; i < n; i++) {
+    const variance = Math.max(0, meanII[i] - meanI[i] * meanI[i]);
+    coefA[i] = variance / (variance + epsL);
+    coefB[i] = meanI[i] - coefA[i] * meanI[i];
+  }
+  boxMeanInto(coefA, width, height, rL, temp, meanA, column);
+  boxMeanInto(coefB, width, height, rL, temp, meanB, column);
+  const Yout = buffer("dn-y-out", n);
+  for (let i = 0; i < n; i++) {
+    const q = meanA[i] * Y[i] + meanB[i];
+    Yout[i] = Y[i] + (q - Y[i]) * amount;
+  }
+
+  // Colour, guided by luminance. The guide's statistics are the same for both
+  // channels, so its variance is computed once.
+  const rC = Math.max(1, Math.round(NOISE_CHROMA_RADIUS * scale));
+  for (let i = 0; i < n; i++) product[i] = Y[i] * Y[i];
+  boxMeanInto(Y, width, height, rC, temp, meanI, column);
+  boxMeanInto(product, width, height, rC, temp, meanII, column);
+  for (let i = 0; i < n; i++) {
+    const variance = meanII[i] - meanI[i] * meanI[i];
+    meanII[i] = 1 / ((variance > 0 ? variance : 0) + NOISE_CHROMA_EPS);
+  }
+  for (const P of [Cb, Cr]) {
+    for (let i = 0; i < n; i++) product[i] = Y[i] * P[i];
+    boxMeanInto(P, width, height, rC, temp, meanP, column);
+    boxMeanInto(product, width, height, rC, temp, coefB, column);   // mean of I*p, reused as scratch
+    for (let i = 0; i < n; i++) {
+      const covariance = coefB[i] - meanI[i] * meanP[i];
+      coefA[i] = covariance * meanII[i];
+      coefB[i] = meanP[i] - coefA[i] * meanI[i];
+    }
+    boxMeanInto(coefA, width, height, rC, temp, meanA, column);
+    boxMeanInto(coefB, width, height, rC, temp, meanB, column);
+    for (let i = 0; i < n; i++) {
+      const q = meanA[i] * Y[i] + meanB[i];
+      P[i] += (q - P[i]) * amount;
+    }
+  }
+
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    const y = Yout[i];
+    let r = y + Cr[i];
+    let b = y + Cb[i];
+    let g = (y - 0.2126 * r - 0.0722 * b) / 0.7152;
+    r = r < 0 ? 0 : r > 1 ? 1 : r;
+    g = g < 0 ? 0 : g > 1 ? 1 : g;
+    b = b < 0 ? 0 : b > 1 ? 1 : b;
+    // A Uint8ClampedArray rounds to nearest on assignment; a Uint16Array
+    // truncates, so only the 16-bit values need the half added.
+    data8[p] = r * 255;
+    data8[p + 1] = g * 255;
+    data8[p + 2] = b * 255;
+    if (data16) {
+      data16[p] = r * 65535 + 0.5;
+      data16[p + 1] = g * 65535 + 0.5;
+      data16[p + 2] = b * 65535 + 0.5;
+    }
+  }
+}
+
+/**
+ * Applies noise reduction, clarity and sharpness to a finished image, in place.
  *
  * Both work on luminance, as editors do, and add the same amount to all three
  * channels, which changes brightness locally without shifting colour or
@@ -546,6 +747,8 @@ function upsampleAxis(size, small, step) {
  *   with it and the preview approximates the file
  */
 export function applyDetail(detail, data8, data16, width, height, scale = 1) {
+  if (detail.noise) applyDenoise(detail.noise, data8, data16, width, height, scale);
+  if (!detail.sharpness && !detail.clarity) return;
   const n = width * height;
   const luma = buffer("luma", n);
   for (let i = 0, p = 0; i < n; i++, p += 4) {

@@ -79,7 +79,10 @@ export const translations = {
     ADJUST_TITLE: "Adjust image",
     ADJUST_RESET: "Reset adjustments",
     ADJUST_NOTE:
-      "Changes preview live and apply to the downloaded file. Click the picture to see it without edits, or hold it. Double-click a slider to reset it.",
+      "Edits apply straight away, at full quality, to this image only. Click the picture to see it without edits, or hold it. Double-click a slider to reset it.",
+    UNDO: "Undo",
+    REDO: "Redo",
+    NOISE_LABEL: "Noise reduction",
     ADJUST_PEEK: "Show the picture without your edits: click for a moment, or hold",
     ADJUST_PEEK_TAG: "Without edits",
     CONTRAST_LABEL: "Contrast",
@@ -117,7 +120,7 @@ export const translations = {
     TIP_FORMAT:
       "The file you download. JPEG is 8-bit sRGB with an embedded sRGB profile, the best choice for WhatsApp, Instagram and the web. PNG is 16-bit sRGB and uncompressed, for archiving the full precision; it is large. WebP sits in between.",
     TIP_QUALITY:
-      "JPEG and WebP compression. Higher keeps more detail and makes a bigger file; below about 80 you may see blocking in smooth gradients.",
+      "JPEG and WebP compression, applied only when you download. The picture you edit stays lossless. Higher keeps more detail and makes a bigger file; below about 80 you may see blocking in smooth gradients.",
     TIP_ASPECT:
       "Constrains the crop box. Original keeps the proportions of the source, so the result is never stretched.",
     TIP_INPUT:
@@ -144,6 +147,8 @@ export const translations = {
       "Removes a green or magenta cast: right adds magenta, left adds green. Use it after Temperature when whites still look off.",
     TIP_VIBRANCE:
       "A gentler saturation: it lifts muted colours first and leaves vivid ones alone, so a dull sky gains colour before signs or skin tones turn garish. Left mutes the dull colours first.",
+    TIP_NOISE:
+      "Smooths grain and coloured speckle while keeping edges and texture. Colour noise, the blotchy kind in dark scenes, goes first. It runs before Clarity and Sharpness, so they do not sharpen the noise back.",
     TIP_CLARITY:
       "Local contrast in the midtones: brings out texture and depth without making blacks or whites harsher. Strong outlines are left alone, so it does not draw halos. Left softens the picture.",
     TIP_SHARPNESS:
@@ -151,7 +156,7 @@ export const translations = {
     TIP_VIGNETTE:
       "Left darkens the corners to draw the eye to the centre; right lightens them. The shape follows the frame, crop included.",
     TIP_MAXDIM:
-      "Shrinks the result so the longest side fits this many pixels. The aspect ratio is always preserved.",
+      "Shrinks the downloaded file so its longest side fits this many pixels. The picture you edit stays full size, and the aspect ratio is always preserved.",
     DOWNLOAD_ALL: "Download all",
     INITIAL_STATUS: "Open an HDR image (AVIF, HEIF, JPEG, PNG or WebP) to begin.",
     LOADING: "Decoding image…",
@@ -163,13 +168,20 @@ export const translations = {
     CONVERT_ERROR: "The conversion failed: {message}",
     CROP_INSTRUCTION: "Drag the selection or its corners to choose the area to keep.",
     CROP_RESET_DONE: "Crop reset to the full image.",
+    CROP_APPLIED: "Crop applied: {width}×{height} px.",
     CROP_SUMMARY: "Crop: {width}×{height} px ({ratio}).",
     NO_HDR_DATA:
       "Your browser cannot hand over the raw HDR samples, so the image was read after the browser converted it. Chrome or Edge give accurate results.",
     UNTAGGED_SOURCE: "This file has no HDR tagging, so it is treated as SDR sRGB. You can override it in the advanced settings.",
     QUEUE_LABEL: "Loaded images",
     QUEUE_REMOVE: "Remove {name}",
-    IMAGE_REMOVED: "{name} removed from the list."
+    IMAGE_REMOVED: "{name} removed from the list.",
+    RESULT_NOTE: "{width}×{height} · saved as {format} when you download",
+    FORMAT_PNG_16: "PNG, 16-bit",
+    EXPORTING: "Preparing {name}…",
+    EXPORT_ERROR: "Could not save the image: {message}",
+    NOTHING_TO_UNDO: "Nothing to undo.",
+    NOTHING_TO_REDO: "Nothing to redo."
   },
   es: {
     PAGE_TITLE: "HDR Converter — Imágenes HDR a SDR",
@@ -251,7 +263,10 @@ export const translations = {
     ADJUST_TITLE: "Ajustar imagen",
     ADJUST_RESET: "Restablecer ajustes",
     ADJUST_NOTE:
-      "Los cambios se ven al momento y se aplican al archivo que descargues. Haz clic en la imagen para verla sin ajustes, o mantenla pulsada. Haz doble clic en un control para restablecerlo.",
+      "Los ajustes se aplican al momento, con toda la calidad, solo a esta imagen. Haz clic en la imagen para verla sin ajustes, o mantenla pulsada. Haz doble clic en un control para restablecerlo.",
+    UNDO: "Deshacer",
+    REDO: "Rehacer",
+    NOISE_LABEL: "Reducción de ruido",
     ADJUST_PEEK: "Ver la imagen sin tus ajustes: haz clic para verla un momento, o mantenla pulsada",
     ADJUST_PEEK_TAG: "Sin ajustes",
     CONTRAST_LABEL: "Contraste",
@@ -289,7 +304,7 @@ export const translations = {
     TIP_FORMAT:
       "El archivo que vas a descargar. JPEG es sRGB de 8 bits con el perfil sRGB incrustado, lo mejor para WhatsApp, Instagram y la web. PNG es sRGB de 16 bits sin compresión, para archivar toda la precisión; ocupa mucho. WebP queda entre los dos.",
     TIP_QUALITY:
-      "Compresión de JPEG y WebP. Más alto conserva más detalle y genera un archivo mayor; por debajo de 80 pueden verse bloques en los degradados.",
+      "Compresión de JPEG y WebP, aplicada solo al descargar. La imagen que editas se mantiene sin pérdida. Más alto conserva más detalle y genera un archivo mayor; por debajo de 80 pueden verse bloques en los degradados.",
     TIP_ASPECT:
       "Limita el recuadro de recorte. Original mantiene las proporciones del archivo, así que el resultado nunca se deforma.",
     TIP_INPUT:
@@ -316,6 +331,8 @@ export const translations = {
       "Elimina un tono verde o magenta: a la derecha añade magenta, a la izquierda verde. Úsalo después de la Temperatura si los blancos siguen sin verse neutros.",
     TIP_VIBRANCE:
       "Una saturación más suave: aviva primero los colores apagados y deja en paz los intensos, así un cielo gris gana color antes de que los carteles o la piel se vean chillones. A la izquierda apaga primero los colores más débiles.",
+    TIP_NOISE:
+      "Suaviza el grano y las motas de color conservando los bordes y la textura. Primero desaparece el ruido de color, el de las manchas en las escenas oscuras. Se aplica antes que la Claridad y la Nitidez, para que no vuelvan a realzar el ruido.",
     TIP_CLARITY:
       "Contraste local en los tonos medios: resalta la textura y la profundidad sin endurecer los negros ni los blancos. Los contornos marcados no se tocan, así que no aparecen halos. A la izquierda suaviza la imagen.",
     TIP_SHARPNESS:
@@ -323,7 +340,7 @@ export const translations = {
     TIP_VIGNETTE:
       "A la izquierda oscurece las esquinas para llevar la mirada al centro; a la derecha las aclara. La forma sigue el encuadre, recorte incluido.",
     TIP_MAXDIM:
-      "Reduce el resultado para que el lado más largo quepa en estos píxeles. La proporción siempre se conserva.",
+      "Reduce el archivo descargado para que su lado más largo quepa en estos píxeles. La imagen que editas se mantiene a tamaño completo, y la proporción siempre se conserva.",
     DOWNLOAD_ALL: "Descargar todo",
     INITIAL_STATUS: "Abre una imagen HDR (AVIF, HEIF, JPEG, PNG o WebP) para empezar.",
     LOADING: "Decodificando imagen…",
@@ -335,6 +352,7 @@ export const translations = {
     CONVERT_ERROR: "La conversión ha fallado: {message}",
     CROP_INSTRUCTION: "Arrastra la selección o sus esquinas para elegir el área que quieres conservar.",
     CROP_RESET_DONE: "Recorte reiniciado a la imagen completa.",
+    CROP_APPLIED: "Recorte aplicado: {width}×{height} px.",
     CROP_SUMMARY: "Recorte: {width}×{height} px ({ratio}).",
     NO_HDR_DATA:
       "Tu navegador no entrega las muestras HDR originales, así que la imagen se leyó ya convertida por el navegador. Chrome o Edge dan resultados precisos.",
@@ -342,7 +360,13 @@ export const translations = {
       "Este archivo no tiene etiquetas HDR, así que se trata como SDR sRGB. Puedes forzarlo en los ajustes avanzados.",
     QUEUE_LABEL: "Imágenes cargadas",
     QUEUE_REMOVE: "Quitar {name}",
-    IMAGE_REMOVED: "{name} se ha quitado de la lista."
+    IMAGE_REMOVED: "{name} se ha quitado de la lista.",
+    RESULT_NOTE: "{width}×{height} · se guarda como {format} al descargar",
+    FORMAT_PNG_16: "PNG de 16 bits",
+    EXPORTING: "Preparando {name}…",
+    EXPORT_ERROR: "No se pudo guardar la imagen: {message}",
+    NOTHING_TO_UNDO: "No hay nada que deshacer.",
+    NOTHING_TO_REDO: "No hay nada que rehacer."
   }
 };
 
