@@ -11,6 +11,9 @@ runs locally in the browser — no upload, no server.
 - Preview, crop and convert HDR images to SDR, side by side. A crop applies as
   soon as you press **Done**, with no need to convert again, and stays visible
   on the source as the kept area.
+- An on-image HDR/SDR badge follows the window's current display: tagged HDR
+  originals show a green **HDR** badge when HDR output is reported, and **SDR**
+  when moved back to an SDR display. Converted previews stay **SDR**.
 - Crop ratio locked to the original aspect ratio by default, so the result keeps
   the proportions of the source. Free, 1:1, 16:9, 4:3 and 3:2 are also available.
 - Faithful by default: every tone that an SDR screen can show is reproduced at
@@ -42,8 +45,9 @@ runs locally in the browser — no upload, no server.
   bar under the picture (the percentage switches between fit and 100%). See
   [Zoom](#zoom).
 - A before/after view with a draggable wipe, comparing the converted file
-  against the way your device already renders the HDR original. The drag is
-  pointer-based and works the same with a finger as with a mouse, and it only
+  against the browser's SDR canvas preview of the original. Both sides of this
+  comparison are SDR, even on an HDR display. The drag is pointer-based and
+  works the same with a finger as with a mouse, and it only
   moves composited layers, so it never repaints the pictures while you drag.
 - While a dialog is open the page behind it stays still.
 - Every setting has an **i** button explaining what it changes.
@@ -331,6 +335,21 @@ not, or if the worker script cannot load (the page opened from `file://`, say),
 the same code runs on the main thread instead and produces identical files,
 only without the parallelism.
 
+### HDR display status
+
+The source badge combines the original file's PQ/HLG tagging with the browser's
+`(dynamic-range: high)` media query. It listens for changes, so moving the window
+between SDR and HDR displays updates it without reloading or reconverting.
+The original's tags are kept separately from the conversion samples, so an HDR
+original can still be identified when decoding falls back to an SDR canvas.
+The result, adjustment panel and comparison canvases remain SDR.
+
+This is the browser's reported HDR capability, not a measurement of the panel's
+light output. OS HDR settings and browser support affect the result; a browser
+that does not report HDR will show SDR. Files whose tagging cannot be identified
+show **HDR ?** rather than claiming HDR is active. Gain-map formats are not
+detected by the PQ/HLG check.
+
 ## Run locally
 
 ```sh
@@ -340,6 +359,13 @@ python3 -m http.server 8000
 ```
 
 Then open <http://localhost:8000>. There is no build step and no dependency.
+
+The HDR status and decoding metadata regression checks use Node's built-in
+test runner (Node 22.7 or newer):
+
+```sh
+node --test tests/*.test.mjs
+```
 
 ## Performance
 

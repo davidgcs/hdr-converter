@@ -252,6 +252,7 @@
                 <div class="page" id="source-page" hidden>
                   <img id="source-image" alt="">
                   <div class="overlay" id="crop-overlay"></div>
+                  <span class="display-status" id="source-display-status" role="status" aria-live="polite" aria-atomic="true" hidden>SDR</span>
                 </div>
               </div>
               <p class="pane-note" id="source-note"></p>
@@ -266,6 +267,7 @@
                 <div class="page" id="result-page" hidden>
                   <canvas id="result-canvas" class="document-canvas" role="img"></canvas>
                   <canvas id="result-preview" class="document-canvas" hidden></canvas>
+                  <span class="display-status" data-i18n-title="DISPLAY_SDR_PREVIEW">SDR</span>
                 </div>
               </div>
               <p class="pane-note" id="result-note"></p>
@@ -360,7 +362,7 @@
         >
           <span class="compare-grip" aria-hidden="true"></span>
         </div>
-        <span class="compare-tag compare-tag--left" data-i18n="COMPARE_BEFORE">Original (HDR)</span>
+        <span class="compare-tag compare-tag--left" data-i18n="COMPARE_BEFORE">Original (SDR preview)</span>
         <span class="compare-tag compare-tag--right" data-i18n="COMPARE_AFTER">Converted (SDR)</span>
       </div>
       <div class="zoom-bar" id="compare-zoom" role="toolbar" data-i18n-aria-label="ZOOM_LABEL" aria-label="Zoom">
@@ -381,7 +383,7 @@
         </button>
       </div>
       <p class="compare-note" data-i18n="COMPARE_NOTE">
-        The left side is how this device already renders the HDR file.
+        The left side is the browser's SDR canvas preview of the original file; both sides are SDR.
       </p>
     </dialog>
 
@@ -421,6 +423,7 @@
         >
           <canvas id="adjust-canvas"></canvas>
           <span class="adjust-peek-tag" id="adjust-peek-tag" hidden data-i18n="ADJUST_PEEK_TAG">Without edits</span>
+          <span class="display-status" data-i18n-title="DISPLAY_SDR_PREVIEW">SDR</span>
         </div>
         <div class="zoom-bar" id="adjust-zoom" role="toolbar" data-i18n-aria-label="ZOOM_LABEL" aria-label="Zoom">
           <button class="icon-button" type="button" data-zoom="out" data-i18n-aria-label="ZOOM_OUT" aria-label="Zoom out">

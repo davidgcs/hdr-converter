@@ -69,6 +69,11 @@ export const translations = {
       "Put every setting back to the recommended baseline for a normal HDR photo.",
     SOURCE_TITLE: "Source (HDR)",
     RESULT_TITLE: "Result (SDR)",
+    DISPLAY_HDR: "HDR source. Your browser reports HDR output on the current display.",
+    DISPLAY_SDR_SCREEN: "HDR output is not reported for the current display. The original is shown in SDR.",
+    DISPLAY_SDR_SOURCE: "SDR source. This image does not use HDR output.",
+    DISPLAY_UNKNOWN: "This file's HDR tagging could not be identified. HDR output cannot be confirmed.",
+    DISPLAY_SDR_PREVIEW: "This preview uses an SDR canvas, even on an HDR display.",
     EMPTY_SOURCE: "No image loaded.",
     EMPTY_RESULT: "Convert an image to see the SDR result.",
     OPEN_TAB: "Open in new tab",
@@ -109,11 +114,11 @@ export const translations = {
     VIGNETTE_LABEL: "Vignette",
     COMPARE: "Compare with the original",
     COMPARE_TITLE: "Before and after",
-    COMPARE_BEFORE: "Original (HDR)",
+    COMPARE_BEFORE: "Original (SDR preview)",
     COMPARE_AFTER: "Converted (SDR)",
     COMPARE_SLIDER: "Move to wipe between the two images",
     COMPARE_NOTE:
-      "The left side is how this device already renders the HDR file — the same thing another screen or a messaging app would show. Scroll or pinch to zoom; zoomed in, drag the picture to move around and the line to compare.",
+      "The left side is the browser's SDR canvas preview of the original file; both sides are SDR. Scroll or pinch to zoom; zoomed in, drag the picture to move around and the line to compare.",
     TIP_TONEMAP:
       "How light brighter than the SDR screen can show is fitted into range. BT.2390, the ITU standard, reproduces every tone that fits exactly as it was, rolls off only what is brighter, and keeps shadow detail above the screen's black. Mobius is FFmpeg's default, Hable is filmic but darker, and Clip simply cuts anything too bright.",
     TIP_BRIGHTNESS:
@@ -259,6 +264,11 @@ export const translations = {
       "Devuelve todos los ajustes al punto de partida recomendado para una foto HDR normal.",
     SOURCE_TITLE: "Origen (HDR)",
     RESULT_TITLE: "Resultado (SDR)",
+    DISPLAY_HDR: "Origen HDR. Tu navegador indica salida HDR en la pantalla actual.",
+    DISPLAY_SDR_SCREEN: "La pantalla actual no indica salida HDR. El original se muestra en SDR.",
+    DISPLAY_SDR_SOURCE: "Origen SDR. Esta imagen no utiliza salida HDR.",
+    DISPLAY_UNKNOWN: "No se pudieron identificar las etiquetas HDR del archivo. No se puede confirmar la salida HDR.",
+    DISPLAY_SDR_PREVIEW: "Esta vista previa utiliza un lienzo SDR, incluso en una pantalla HDR.",
     EMPTY_SOURCE: "No hay ninguna imagen cargada.",
     EMPTY_RESULT: "Convierte una imagen para ver el resultado SDR.",
     OPEN_TAB: "Abrir en una pestaña nueva",
@@ -299,11 +309,11 @@ export const translations = {
     VIGNETTE_LABEL: "Viñeta",
     COMPARE: "Comparar con la original",
     COMPARE_TITLE: "Antes y después",
-    COMPARE_BEFORE: "Original (HDR)",
+    COMPARE_BEFORE: "Original (vista SDR)",
     COMPARE_AFTER: "Convertida (SDR)",
     COMPARE_SLIDER: "Desplaza para comparar las dos imágenes",
     COMPARE_NOTE:
-      "La parte izquierda es como este dispositivo ya muestra el archivo HDR, lo mismo que vería otra pantalla o una aplicación de mensajería. Usa la rueda o pellizca para ampliar; con zoom, arrastra la imagen para moverte y la línea para comparar.",
+      "La parte izquierda es la vista previa SDR que el navegador dibuja del archivo original; ambas partes son SDR. Usa la rueda o pellizca para ampliar; con zoom, arrastra la imagen para moverte y la línea para comparar.",
     TIP_TONEMAP:
       "Cómo se encaja la luz que la pantalla SDR no puede mostrar. BT.2390, el estándar de la ITU, reproduce tal cual cada tono que cabe, comprime solo lo que es más brillante y conserva el detalle de las sombras por encima del negro de la pantalla. Mobius es el de FFmpeg, Hable es cinematográfico pero más oscuro y Clip simplemente recorta lo que sobra.",
     TIP_BRIGHTNESS:

@@ -198,6 +198,11 @@ export function buildLinearizeLut(transfer, size) {
   return lut;
 }
 
+/** PQ and HLG carry HDR; everything else was graded for an SDR display. */
+export function isHdrTransfer(transfer) {
+  return transfer === "pq" || transfer === "hlg";
+}
+
 export function linearizeValue(transfer, value) {
   switch (transfer) {
     case "pq":

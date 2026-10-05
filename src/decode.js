@@ -81,11 +81,10 @@ function looksLikeGbr(planeU, planeV, bitDepth) {
   return Math.abs(mean(planeU) - midpoint) > limit && Math.abs(mean(planeV) - midpoint) > limit;
 }
 
-async function decodeWithWebCodecs(file) {
+async function decodeWithWebCodecs(file, tags) {
   const type = file.type || "image/avif";
   if (!(await window.ImageDecoder.isTypeSupported(type))) return null;
 
-  const tags = await readFileColorTags(file);
   const decoder = new window.ImageDecoder({ data: await file.arrayBuffer(), type });
   let frame = null;
   try {
@@ -201,13 +200,19 @@ async function decodeWithCanvas(file) {
  * a list of files without touching this module.
  */
 export async function decodeFile(file) {
+  const tags = await readFileColorTags(file);
+  let decoded = null;
   if (supportsWebCodecs()) {
     try {
-      const decoded = await decodeWithWebCodecs(file);
-      if (decoded) return decoded;
+      decoded = await decodeWithWebCodecs(file, tags);
     } catch {
       // Fall through: some builds expose ImageDecoder but fail on the codec.
     }
   }
-  return decodeWithCanvas(file);
+  if (!decoded) decoded = await decodeWithCanvas(file);
+  // The native <img> retains the file's transfer even if the decoded pixels
+  // were flattened to SDR by the canvas fallback.
+  decoded.displayTransfer = tags?.transfer
+    || (decoded.colorSpace.tagged ? decoded.colorSpace.transfer : null);
+  return decoded;
 }

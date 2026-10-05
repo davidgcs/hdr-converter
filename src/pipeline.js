@@ -22,6 +22,7 @@ import {
   REFERENCE_WHITE,
   hlgOotfFactor,
   inverseEotfSrgb,
+  isHdrTransfer,
   linearizeValue,
   rgb2rgbMatrix,
   yuv2rgbMatrix
@@ -138,11 +139,6 @@ function lutLookup(lut, transfer, value) {
   const index = position | 0;
   const fraction = position - index;
   return lut[index] + (lut[index + 1] - lut[index]) * fraction;
-}
-
-/** PQ and HLG carry HDR; everything else was graded for an SDR display. */
-function isHdrTransfer(transfer) {
-  return transfer === "pq" || transfer === "hlg";
 }
 
 /** The BT.2020 -> BT.709 matrix for a source, or null when none is needed. */

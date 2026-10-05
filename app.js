@@ -12,6 +12,7 @@ import { REFERENCE_WHITE } from "./src/colorspace.js";
 import { GRADE_DEFAULTS, GRADE_KEYS } from "./src/grade.js";
 import { PRIORITY, createPool } from "./src/pool.js";
 import { ZOOM_STEP, createZoom, zoomKey } from "./src/zoom.js";
+import { getSourceDisplayStatus, watchHdrDisplay } from "./src/display.js";
 
 const STORAGE_KEYS = {
   language: "hdr-converter-language",
@@ -50,6 +51,7 @@ const elements = {
   sourceEmpty: document.querySelector("#source-empty"),
   sourcePage: document.querySelector("#source-page"),
   sourceImage: document.querySelector("#source-image"),
+  sourceDisplayStatus: document.querySelector("#source-display-status"),
   sourceNote: document.querySelector("#source-note"),
   overlay: document.querySelector("#crop-overlay"),
   resultEmpty: document.querySelector("#result-empty"),
@@ -118,6 +120,7 @@ const elements = {
 const state = {
   language: "en",
   theme: "light",
+  hdrAvailable: false,
   status: { key: "INITIAL_STATUS", params: {} },
   items: [],
   activeId: null,
@@ -317,6 +320,7 @@ function applyLanguage(language) {
   updateResultNote();
   updateControls();
   updateSourceNote();
+  updateSourceDisplayStatus();
   setStatus(state.status.key, state.status.params);
 
   try {
@@ -680,6 +684,28 @@ function syncQueue() {
 let sourceShown = Promise.resolve();
 let sourceToken = 0;
 
+function updateSourceDisplayStatus() {
+  const item = activeItem();
+  const image = elements.sourceImage;
+  const badge = elements.sourceDisplayStatus;
+  const ready = item
+    && image.getAttribute("src") === item.previewUrl
+    && image.complete
+    && image.naturalWidth > 0
+    && !elements.sourcePage.classList.contains("is-loading");
+  badge.hidden = !ready;
+  if (!ready) {
+    badge.classList.remove("is-hdr");
+    return;
+  }
+
+  const status = getSourceDisplayStatus(item.source, state.hdrAvailable);
+  badge.textContent = status.label;
+  badge.classList.toggle("is-hdr", status.active);
+  badge.title = translate(status.key);
+  badge.setAttribute("aria-label", badge.title);
+}
+
 /**
  * Shows the selected image's original in the source pane.
  *
@@ -693,17 +719,20 @@ function renderSource() {
   const item = activeItem();
   elements.sourceEmpty.hidden = Boolean(item);
   elements.sourcePage.hidden = !item;
+  elements.sourceDisplayStatus.hidden = true;
   const token = ++sourceToken;
   if (!item) {
     elements.sourceImage.removeAttribute("src");
     elements.sourcePage.classList.remove("is-loading");
     sourceShown = Promise.resolve();
     renderSelection();
+    updateSourceDisplayStatus();
     return;
   }
   if (elements.sourceImage.getAttribute("src") === item.previewUrl) {
     elements.sourcePage.classList.remove("is-loading");
     renderSelection();
+    updateSourceDisplayStatus();
     return;
   }
   elements.sourcePage.classList.add("is-loading");
@@ -718,6 +747,7 @@ function renderSource() {
       elements.sourceImage.alt = item.file.name;
       elements.sourcePage.classList.remove("is-loading");
       renderSelection();
+      updateSourceDisplayStatus();
     });
   renderSelection();
 }
@@ -2076,9 +2106,8 @@ function releaseScrollLock() {
  * Paints the before side of the comparison from the browser's own rendering
  * of the source file, in the same framing as the result, so the halves line up.
  *
- * That rendering is exactly what the user already sees everywhere else: the
- * HDR file squashed into SDR by the display pipeline, which is the thing the
- * conversion is meant to improve on.
+ * Drawing into the default sRGB canvas makes this preview SDR, even when the
+ * source pane's native image is displayed in HDR.
  *
  * It is drawn straight into the canvas the dialog shows, and kept until the
  * result changes. It used to be encoded into a PNG data URL on every open —
@@ -2495,6 +2524,8 @@ elements.downloadAll.addEventListener("click", downloadAll);
 elements.aspect.addEventListener("change", applyAspectChange);
 elements.overlay.addEventListener("pointerdown", beginDrag);
 elements.sourceImage.addEventListener("load", renderSelection);
+elements.sourceImage.addEventListener("load", updateSourceDisplayStatus);
+elements.sourceImage.addEventListener("error", updateSourceDisplayStatus);
 window.addEventListener("resize", renderSelection);
 
 for (const key of EDIT_KEYS) {
@@ -2662,6 +2693,10 @@ applyTheme(getInitialTheme());
 restoreSettings();
 updateSettingVisibility();
 applyLanguage(getInitialLanguage());
+watchHdrDisplay((available) => {
+  state.hdrAvailable = available;
+  updateSourceDisplayStatus();
+});
 setStatus("INITIAL_STATUS");
 
 if (!supportsWebCodecs()) {

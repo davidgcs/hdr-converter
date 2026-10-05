@@ -387,6 +387,44 @@ input[type="range"] {
   transition: opacity 120ms ease;
 }
 
+.display-status {
+  position: absolute;
+  z-index: 3;
+  top: 10px;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid rgb(255 255 255 / 24%);
+  border-radius: 999px;
+  color: #f8fafc;
+  background: rgb(13 17 23 / 82%);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+.display-status::before {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #94a3b8;
+  content: "";
+}
+
+.display-status.is-hdr {
+  border-color: rgb(74 222 128 / 55%);
+  color: #dcfce7;
+  background: rgb(20 83 45 / 90%);
+}
+
+.display-status.is-hdr::before {
+  background: #4ade80;
+}
+
 .overlay:not(.crop-mode) {
   pointer-events: none;
 }
